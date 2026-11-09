@@ -215,295 +215,6 @@ impl BrowserWindow {
             self.render_menu_popup(ctx);
         }
 
-        fn handle_shortcuts(&mut self, ctx: &egui::Context) {
-        let keys = ctx.input(|i| {
-            let ctrl = i.modifiers.ctrl || i.modifiers.command;
-            let shift = i.modifiers.shift;
-            (
-                ctrl && i.key_pressed(Key::T),
-                ctrl && i.key_pressed(Key::W),
-                ctrl && i.key_pressed(Key::R),
-                ctrl && i.key_pressed(Key::L),
-                ctrl && i.key_pressed(Key::H),
-                ctrl && i.key_pressed(Key::J),
-                ctrl && shift && i.key_pressed(Key::T),
-                ctrl && shift && i.key_pressed(Key::Tab),
-                ctrl && !shift && i.key_pressed(Key::Tab),
-                i.modifiers.alt && i.key_pressed(Key::ArrowLeft),
-                i.modifiers.alt && i.key_pressed(Key::ArrowRight),
-                i.key_pressed(Key::Escape),
-            )
-        });
-        if keys.0 { self.open_new_tab(); }
-        if keys.1 { self.close_active_tab(); }
-        if keys.2 { self.viewport.texture = None; self.viewport.dirty = true; }
-        if keys.3 { self.address_bar = self.active_url(); self.omnibox_focused = true; }
-        if keys.4 { self.show_history = true; }
-        if keys.5 { self.show_downloads = true; }
-        if keys.6 { self.restore_closed_tab(); }
-        if keys.7 { self.switch_previous_tab(); }
-        if keys.8 { self.switch_next_tab(); }
-        if keys.9 { self.navigate_history(-1); }
-        if keys.10 { self.navigate_history(1); }
-        if keys.11 { self.show_menu = false; }
-    }
-
-    fn open_new_tab(&mut self) {
-        let id = self.tab_manager.open_tab(
-            "about:blank".to_string(),
-            "New Tab".to_string(),
-        );
-        self.navigation.insert(id, NavigationHistory {
-            entries: vec!["about:blank".to_string()],
-            index: 0,
-        });
-        self.address_bar.clear();
-        self.viewport.texture = None;
-        self.viewport.dirty = true;
-    }
-
-    fn navigate_to(&mut self, input: &str) {
-        let url = resolve_address(input);
-        let id = match self.tab_manager.active_tab() {
-            Some(id) => id,
-            None => {
-                self.open_new_tab();
-                match self.tab_manager.active_tab() {
-                    Some(id) => id,
-                    None => return,
-                }
-            }
-        };
-
-        let history = self.navigation.entry(id).or_default();
-        if history.entries.is_empty() {
-            history.entries.push("about:blank".to_string());
-            history.index = 0;
-        }
-        if history.entries.get(history.index) != Some(&url) {
-            history.entries.truncate(history.index.saturating_add(1));
-            history.entries.push(url.clone());
-            history.index = history.entries.len() - 1;
-        }
-
-        if let Some(tab) = self.tab_manager.get_tab_mut(id) {
-            tab.url = url.clone();
-            tab.title = "Loading…".to_string();
-            tab.state = TabState::Loading;
-            tab.load_progress = 0.0;
-        }
-        self.address_bar = url.clone();
-        self.viewport.texture = None;
-        self.viewport.dirty = true;
-        let _ = storage::history::add_visit(&self.data_dir, &url, "");
-    }
-
-    fn navigate_history(&mut self, direction: i32) {
-        let Some(id) = self.tab_manager.active_tab() else { return };
-        let Some(history) = self.navigation.get_mut(&id) else { return };
-
-        if direction < 0 && history.index > 0 {
-            history.index -= 1;
-        } else if direction > 0 && history.index + 1 < history.entries.len() {
-            history.index += 1;
-        } else {
-            return;
-        }
-
-        let url = history.entries[history.index].clone();
-        if let Some(tab) = self.tab_manager.get_tab_mut(id) {
-            tab.url = url.clone();
-            tab.title = if url == "about:blank" { "New Tab".to_string() } else { "Loading…".to_string() };
-            tab.state = if url == "about:blank" { TabState::Active } else { TabState::Loading };
-        }
-        self.address_bar = if url == "about:blank" { String::new() } else { url };
-        self.viewport.texture = None;
-        self.viewport.dirty = true;
-    }
-
-    fn navigation_availability(&self) -> (bool, bool) {
-        let Some(id) = self.tab_manager.active_tab() else { return (false, false) };
-        let Some(history) = self.navigation.get(&id) else { return (false, false) };
-        (history.index > 0, history.index + 1 < history.entries.len())
-    }
-
-    fn close_tab(&mut self, id: TabId) {
-        self.navigation.remove(&id);
-        self.tab_manager.close_tab(id);
-        if self.tab_manager.active_tab().is_none() {
-            self.open_new_tab();
-        } else {
-            self.sync_active_address();
-            self.viewport.texture = None;
-            self.viewport.dirty = true;
-        }
-    }
-
-    fn close_active_tab(&mut self) {
-        if let Some(id) = self.tab_manager.active_tab() {
-            self.close_tab(id);
-        }
-    }
-
-    fn restore_closed_tab(&mut self) {
-        if let Some(id) = self.tab_manager.restore_closed_tab() {
-            if let Some(tab) = self.tab_manager.get_tab(id) {
-                let url = tab.url.clone();
-                self.navigation.insert(id, NavigationHistory {
-                    entries: vec![url],
-                    index: 0,
-                });
-            }
-            self.sync_active_address();
-            self.viewport.texture = None;
-            self.viewport.dirty = true;
-        }
-    }
-
-    fn switch_previous_tab(&mut self) {
-        if self.tab_manager.prev_tab().is_some() {
-            self.sync_active_address();
-            self.viewport.texture = None;
-            self.viewport.dirty = true;
-        }
-    }
-
-    fn switch_next_tab(&mut self) {
-        if self.tab_manager.next_tab().is_some() {
-            self.sync_active_address();
-            self.viewport.texture = None;
-            self.viewport.dirty = true;
-        }
-    }
-
-    fn sync_active_address(&mut self) {
-        self.address_bar = self.tab_manager.active_tab()
-            .and_then(|id| self.tab_manager.get_tab(id))
-            .map(|tab| if tab.url == "about:blank" { String::new() } else { tab.url.clone() })
-            .unwrap_or_default();
-    }
-
-    fn active_url(&self) -> String {
-        self.tab_manager.active_tab()
-            .and_then(|id| self.tab_manager.get_tab(id))
-            .map(|tab| tab.url.clone())
-            .unwrap_or_default()
-    }
-
-    fn is_active_bookmarked(&self) -> bool {
-        let url = self.active_url();
-        !url.is_empty()
-            && storage::bookmarks::list(&self.data_dir).iter().any(|bookmark| bookmark.url == url)
-    }
-
-    fn toggle_bookmark(&mut self) {
-        let url = self.active_url();
-        if url.is_empty() || url == "about:blank" { return; }
-
-        let existing = storage::bookmarks::list(&self.data_dir)
-            .into_iter()
-            .find(|bookmark| bookmark.url == url);
-        if let Some(bookmark) = existing {
-            let _ = storage::bookmarks::remove(&self.data_dir, &bookmark.id);
-        } else {
-            let title = self.tab_manager.active_tab()
-                .and_then(|id| self.tab_manager.get_tab(id))
-                .map(|tab| tab.title.clone())
-                .unwrap_or_else(|| extract_domain(&url));
-            let _ = storage::bookmarks::add(&self.data_dir, &url, &title, "Bookmarks bar");
-        }
-    }
-
-    fn render_history_popup(&mut self, ctx: &egui::Context) {
-        let mut open = self.show_history;
-        egui::Window::new("History")
-            .open(&mut open)
-            .default_width(440.0)
-            .default_height(420.0)
-            .resizable(true)
-            .show(ctx, |ui| {
-                let entries = storage::history::list(&self.data_dir);
-                if entries.is_empty() {
-                    ui.label("No browsing history yet.");
-                } else {
-                    egui::ScrollArea::vertical().show(ui, |ui| {
-                        for entry in entries.into_iter().take(200) {
-                            let title = if entry.title.is_empty() { &entry.url } else { &entry.title };
-                            if ui.selectable_label(false, format!("{}\n{}", truncate_tab_title(title, 64), entry.url)).clicked() {
-                                let url = entry.url.clone();
-                                self.navigate_to(&url);
-                            }
-                            ui.separator();
-                        }
-                    });
-                }
-            });
-        self.show_history = open;
-    }
-
-    fn render_downloads_popup(&mut self, ctx: &egui::Context) {
-        let mut open = self.show_downloads;
-        egui::Window::new("Downloads")
-            .open(&mut open)
-            .default_width(480.0)
-            .default_height(360.0)
-            .resizable(true)
-            .show(ctx, |ui| {
-                let records = storage::download::list(&self.data_dir);
-                if records.is_empty() {
-                    ui.label("No downloads yet.");
-                } else {
-                    egui::ScrollArea::vertical().show(ui, |ui| {
-                        for record in records.iter().rev() {
-                            ui.label(RichText::new(&record.suggested_filename).strong());
-                            ui.label(RichText::new(format!("{} bytes · {:?}", record.downloaded_bytes, record.state))
-                                .small().color(self.theme.text_muted()));
-                            ui.separator();
-                        }
-                    });
-                }
-            });
-        self.show_downloads = open;
-    }
-
-    fn render_bookmarks_manager(&mut self, ctx: &egui::Context) {
-        let mut open = self.show_bookmarks_manager;
-        egui::Window::new("Bookmarks")
-            .open(&mut open)
-            .default_width(440.0)
-            .default_height(380.0)
-            .resizable(true)
-            .show(ctx, |ui| {
-                let entries = storage::bookmarks::list(&self.data_dir);
-                if entries.is_empty() {
-                    ui.label("Your bookmarks will appear here.");
-                } else {
-                    egui::ScrollArea::vertical().show(ui, |ui| {
-                        for bookmark in entries {
-                            ui.horizontal(|ui| {
-                                ui.vertical(|ui| {
-                                    ui.label(RichText::new(&bookmark.title).strong());
-                                    ui.label(RichText::new(&bookmark.url).small().color(self.theme.text_muted()));
-                                    ui.label(RichText::new(&bookmark.folder).small().color(self.theme.text_muted()));
-                                });
-                                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                                    if ui.small_button("Remove").clicked() {
-                                        let _ = storage::bookmarks::remove(&self.data_dir, &bookmark.id);
-                                    }
-                                    if ui.small_button("Open").clicked() {
-                                        let url = bookmark.url.clone();
-                                        self.navigate_to(&url);
-                                    }
-                                });
-                            });
-                            ui.separator();
-                        }
-                    });
-                }
-            });
-        self.show_bookmarks_manager = open;
-    }
-
     // ── Dummy profile side panel ──
         if self.show_dummy_panel {
             egui::SidePanel::right("dummy_panel")
@@ -988,6 +699,295 @@ impl BrowserWindow {
         Some(self.profile_id.clone())
     }
 
+    fn handle_shortcuts(&mut self, ctx: &egui::Context) {
+        let keys = ctx.input(|i| {
+            let ctrl = i.modifiers.ctrl || i.modifiers.command;
+            let shift = i.modifiers.shift;
+            (
+                ctrl && i.key_pressed(Key::T),
+                ctrl && i.key_pressed(Key::W),
+                ctrl && i.key_pressed(Key::R),
+                ctrl && i.key_pressed(Key::L),
+                ctrl && i.key_pressed(Key::H),
+                ctrl && i.key_pressed(Key::J),
+                ctrl && shift && i.key_pressed(Key::T),
+                ctrl && shift && i.key_pressed(Key::Tab),
+                ctrl && !shift && i.key_pressed(Key::Tab),
+                i.modifiers.alt && i.key_pressed(Key::ArrowLeft),
+                i.modifiers.alt && i.key_pressed(Key::ArrowRight),
+                i.key_pressed(Key::Escape),
+            )
+        });
+        if keys.0 { self.open_new_tab(); }
+        if keys.1 { self.close_active_tab(); }
+        if keys.2 { self.viewport.texture = None; self.viewport.dirty = true; }
+        if keys.3 { self.address_bar = self.active_url(); self.omnibox_focused = true; }
+        if keys.4 { self.show_history = true; }
+        if keys.5 { self.show_downloads = true; }
+        if keys.6 { self.restore_closed_tab(); }
+        if keys.7 { self.switch_previous_tab(); }
+        if keys.8 { self.switch_next_tab(); }
+        if keys.9 { self.navigate_history(-1); }
+        if keys.10 { self.navigate_history(1); }
+        if keys.11 { self.show_menu = false; }
+    }
+
+    fn open_new_tab(&mut self) {
+        let id = self.tab_manager.open_tab(
+            "about:blank".to_string(),
+            "New Tab".to_string(),
+        );
+        self.navigation.insert(id, NavigationHistory {
+            entries: vec!["about:blank".to_string()],
+            index: 0,
+        });
+        self.address_bar.clear();
+        self.viewport.texture = None;
+        self.viewport.dirty = true;
+    }
+
+    fn navigate_to(&mut self, input: &str) {
+        let url = resolve_address(input);
+        let id = match self.tab_manager.active_tab() {
+            Some(id) => id,
+            None => {
+                self.open_new_tab();
+                match self.tab_manager.active_tab() {
+                    Some(id) => id,
+                    None => return,
+                }
+            }
+        };
+
+        let history = self.navigation.entry(id).or_default();
+        if history.entries.is_empty() {
+            history.entries.push("about:blank".to_string());
+            history.index = 0;
+        }
+        if history.entries.get(history.index) != Some(&url) {
+            history.entries.truncate(history.index.saturating_add(1));
+            history.entries.push(url.clone());
+            history.index = history.entries.len() - 1;
+        }
+
+        if let Some(tab) = self.tab_manager.get_tab_mut(id) {
+            tab.url = url.clone();
+            tab.title = "Loading…".to_string();
+            tab.state = TabState::Loading;
+            tab.load_progress = 0.0;
+        }
+        self.address_bar = url.clone();
+        self.viewport.texture = None;
+        self.viewport.dirty = true;
+        let _ = storage::history::add_visit(&self.data_dir, &url, "");
+    }
+
+    fn navigate_history(&mut self, direction: i32) {
+        let Some(id) = self.tab_manager.active_tab() else { return };
+        let Some(history) = self.navigation.get_mut(&id) else { return };
+
+        if direction < 0 && history.index > 0 {
+            history.index -= 1;
+        } else if direction > 0 && history.index + 1 < history.entries.len() {
+            history.index += 1;
+        } else {
+            return;
+        }
+
+        let url = history.entries[history.index].clone();
+        if let Some(tab) = self.tab_manager.get_tab_mut(id) {
+            tab.url = url.clone();
+            tab.title = if url == "about:blank" { "New Tab".to_string() } else { "Loading…".to_string() };
+            tab.state = if url == "about:blank" { TabState::Active } else { TabState::Loading };
+        }
+        self.address_bar = if url == "about:blank" { String::new() } else { url };
+        self.viewport.texture = None;
+        self.viewport.dirty = true;
+    }
+
+    fn navigation_availability(&self) -> (bool, bool) {
+        let Some(id) = self.tab_manager.active_tab() else { return (false, false) };
+        let Some(history) = self.navigation.get(&id) else { return (false, false) };
+        (history.index > 0, history.index + 1 < history.entries.len())
+    }
+
+    fn close_tab(&mut self, id: TabId) {
+        self.navigation.remove(&id);
+        self.tab_manager.close_tab(id);
+        if self.tab_manager.active_tab().is_none() {
+            self.open_new_tab();
+        } else {
+            self.sync_active_address();
+            self.viewport.texture = None;
+            self.viewport.dirty = true;
+        }
+    }
+
+    fn close_active_tab(&mut self) {
+        if let Some(id) = self.tab_manager.active_tab() {
+            self.close_tab(id);
+        }
+    }
+
+    fn restore_closed_tab(&mut self) {
+        if let Some(id) = self.tab_manager.restore_closed_tab() {
+            if let Some(tab) = self.tab_manager.get_tab(id) {
+                let url = tab.url.clone();
+                self.navigation.insert(id, NavigationHistory {
+                    entries: vec![url],
+                    index: 0,
+                });
+            }
+            self.sync_active_address();
+            self.viewport.texture = None;
+            self.viewport.dirty = true;
+        }
+    }
+
+    fn switch_previous_tab(&mut self) {
+        if self.tab_manager.prev_tab().is_some() {
+            self.sync_active_address();
+            self.viewport.texture = None;
+            self.viewport.dirty = true;
+        }
+    }
+
+    fn switch_next_tab(&mut self) {
+        if self.tab_manager.next_tab().is_some() {
+            self.sync_active_address();
+            self.viewport.texture = None;
+            self.viewport.dirty = true;
+        }
+    }
+
+    fn sync_active_address(&mut self) {
+        self.address_bar = self.tab_manager.active_tab()
+            .and_then(|id| self.tab_manager.get_tab(id))
+            .map(|tab| if tab.url == "about:blank" { String::new() } else { tab.url.clone() })
+            .unwrap_or_default();
+    }
+
+    fn active_url(&self) -> String {
+        self.tab_manager.active_tab()
+            .and_then(|id| self.tab_manager.get_tab(id))
+            .map(|tab| tab.url.clone())
+            .unwrap_or_default()
+    }
+
+    fn is_active_bookmarked(&self) -> bool {
+        let url = self.active_url();
+        !url.is_empty()
+            && storage::bookmarks::list(&self.data_dir).iter().any(|bookmark| bookmark.url == url)
+    }
+
+    fn toggle_bookmark(&mut self) {
+        let url = self.active_url();
+        if url.is_empty() || url == "about:blank" { return; }
+
+        let existing = storage::bookmarks::list(&self.data_dir)
+            .into_iter()
+            .find(|bookmark| bookmark.url == url);
+        if let Some(bookmark) = existing {
+            let _ = storage::bookmarks::remove(&self.data_dir, &bookmark.id);
+        } else {
+            let title = self.tab_manager.active_tab()
+                .and_then(|id| self.tab_manager.get_tab(id))
+                .map(|tab| tab.title.clone())
+                .unwrap_or_else(|| extract_domain(&url));
+            let _ = storage::bookmarks::add(&self.data_dir, &url, &title, "Bookmarks bar");
+        }
+    }
+
+    fn render_history_popup(&mut self, ctx: &egui::Context) {
+        let mut open = self.show_history;
+        egui::Window::new("History")
+            .open(&mut open)
+            .default_width(440.0)
+            .default_height(420.0)
+            .resizable(true)
+            .show(ctx, |ui| {
+                let entries = storage::history::list(&self.data_dir);
+                if entries.is_empty() {
+                    ui.label("No browsing history yet.");
+                } else {
+                    egui::ScrollArea::vertical().show(ui, |ui| {
+                        for entry in entries.into_iter().take(200) {
+                            let title = if entry.title.is_empty() { &entry.url } else { &entry.title };
+                            if ui.selectable_label(false, format!("{}\n{}", truncate_tab_title(title, 64), entry.url)).clicked() {
+                                let url = entry.url.clone();
+                                self.navigate_to(&url);
+                            }
+                            ui.separator();
+                        }
+                    });
+                }
+            });
+        self.show_history = open;
+    }
+
+    fn render_downloads_popup(&mut self, ctx: &egui::Context) {
+        let mut open = self.show_downloads;
+        egui::Window::new("Downloads")
+            .open(&mut open)
+            .default_width(480.0)
+            .default_height(360.0)
+            .resizable(true)
+            .show(ctx, |ui| {
+                let records = storage::download::list(&self.data_dir);
+                if records.is_empty() {
+                    ui.label("No downloads yet.");
+                } else {
+                    egui::ScrollArea::vertical().show(ui, |ui| {
+                        for record in records.iter().rev() {
+                            ui.label(RichText::new(&record.suggested_filename).strong());
+                            ui.label(RichText::new(format!("{} bytes · {:?}", record.downloaded_bytes, record.state))
+                                .small().color(self.theme.text_muted()));
+                            ui.separator();
+                        }
+                    });
+                }
+            });
+        self.show_downloads = open;
+    }
+
+    fn render_bookmarks_manager(&mut self, ctx: &egui::Context) {
+        let mut open = self.show_bookmarks_manager;
+        egui::Window::new("Bookmarks")
+            .open(&mut open)
+            .default_width(440.0)
+            .default_height(380.0)
+            .resizable(true)
+            .show(ctx, |ui| {
+                let entries = storage::bookmarks::list(&self.data_dir);
+                if entries.is_empty() {
+                    ui.label("Your bookmarks will appear here.");
+                } else {
+                    egui::ScrollArea::vertical().show(ui, |ui| {
+                        for bookmark in entries {
+                            ui.horizontal(|ui| {
+                                ui.vertical(|ui| {
+                                    ui.label(RichText::new(&bookmark.title).strong());
+                                    ui.label(RichText::new(&bookmark.url).small().color(self.theme.text_muted()));
+                                    ui.label(RichText::new(&bookmark.folder).small().color(self.theme.text_muted()));
+                                });
+                                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                                    if ui.small_button("Remove").clicked() {
+                                        let _ = storage::bookmarks::remove(&self.data_dir, &bookmark.id);
+                                    }
+                                    if ui.small_button("Open").clicked() {
+                                        let url = bookmark.url.clone();
+                                        self.navigate_to(&url);
+                                    }
+                                });
+                            });
+                            ui.separator();
+                        }
+                    });
+                }
+            });
+        self.show_bookmarks_manager = open;
+    }
+
     // ── 3-dot menu popup ──
     fn render_menu_popup(&mut self, ctx: &egui::Context) {
         let screen = ctx.available_rect();
@@ -1002,7 +1002,6 @@ impl BrowserWindow {
                     .fill(self.theme.toolbar())
                     .rounding(Rounding::same(9.0))
                     .stroke(Stroke::new(1.0, self.theme.border()))
-                    .shadow(egui::epaint::Shadow::small_light())
                     .inner_margin(egui::Margin::same(8.0))
                     .show(ui, |ui| {
                         ui.set_min_width(width - 16.0);
