@@ -32,6 +32,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 mod gl;
 use egui_glow::winit::EguiGlow;
+mod ui;
 mod window;
 
 /// Extract origin (scheme://host) from a URL string.
@@ -132,6 +133,31 @@ fn main() -> Result<()> {
     if args.contains(&"--password-export".to_string()) {
         let profile_id = args.get(1).ok_or_else(|| anyhow::anyhow!("Missing profile ID"))?;
         return password_export(profile_id);
+    }
+
+    // ── Profile management subcommands ──
+    if args.get(1).map(|s| s.as_str()) == Some("create") {
+        let name = args
+            .get(2)
+            .cloned()
+            .unwrap_or_else(|| "Profile".to_string());
+        let mut mgr = ProfileManager::new()
+            .map_err(|e| anyhow::anyhow!("Failed to open profile manager: {}", e))?;
+        let profile = mgr
+            .create(name)
+            .map_err(|e| anyhow::anyhow!("Failed to create profile: {}", e))?;
+        println!("[Profile] Created '{}' ({})", profile.name, profile.id);
+        println!("[Profile] Data dir: {:?}", profile.data_dir);
+        return Ok(());
+    }
+
+    if args.get(1).map(|s| s.as_str()) == Some("list") {
+        let mgr = ProfileManager::new()
+            .map_err(|e| anyhow::anyhow!("Failed to open profile manager: {}", e))?;
+        for profile in mgr.list() {
+            println!("{} | {:?} | {}", profile.name, profile.profile_type, profile.id);
+        }
+        return Ok(());
     }
 
     if args.contains(&"--window".to_string()) {
@@ -283,18 +309,26 @@ impl winit::application::ApplicationHandler for BrowserApp {
 
         eprintln!("[GUI] Creating window for profile: {}", self.profile_id);
 
+        // Chrome-style frame: the UI paints the tab strip, toolbar and window
+        // controls itself, so no OS title bar is drawn over it.
         let window = event_loop
             .create_window(
                 winit::window::Window::default_attributes()
-                    .with_title("MyBrowser")
-                    .with_visible(true),
+                    .with_title("New Tab")
+                    .with_visible(true)
+                    .with_decorations(false)
+                    .with_inner_size(winit::dpi::LogicalSize::new(1280.0, 720.0))
+                    .with_min_inner_size(winit::dpi::LogicalSize::new(860.0, 540.0)),
             )
             .expect("failed to create window");
 
         // Ensure the window is mapped and visible on the X11 display (fixes black screen on VNC).
         window.set_visible(true);
+        // Place the window fully on screen: the default position can leave part
+        // of the client area off the left/top edge of the desktop.
+        window.set_outer_position(winit::dpi::PhysicalPosition::new(40, 30));
 
-        let browser_window =
+        let mut browser_window =
             window::BrowserWindow::new(&self.profile_id).expect("failed to create browser window");
 
         let gl_ctx =
@@ -303,6 +337,13 @@ impl winit::application::ApplicationHandler for BrowserApp {
 
         let egui_glow =
             EguiGlow::new(&event_loop, gl_ctx.gl_arc(), None, None, false);
+
+        // egui applies `set_fonts` at the start of the next frame, so the
+        // browser fonts must be installed before the first frame; otherwise
+        // the first paint lays out "medium"/"brand" text against the default
+        // families and panics.
+        crate::ui::fonts::install(&egui_glow.egui_ctx);
+        browser_window.mark_fonts_installed();
 
         self.window = Some(window);
         self.gl_ctx = Some(gl_ctx);
@@ -370,7 +411,12 @@ impl winit::application::ApplicationHandler for BrowserApp {
         }
 
         unsafe { gl_ctx.swap_buffers() };
-        window.request_redraw();
+
+        // Repaint only when egui actually asked for one: the old unconditional
+        // `request_redraw` kept the GPU busy at 100% while the browser was idle.
+        if egui_glow.egui_ctx.has_requested_repaint() {
+            window.request_redraw();
+        }
     }
 }
 

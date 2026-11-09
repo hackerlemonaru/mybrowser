@@ -61,6 +61,7 @@ impl MessageBus {
             .map_err(|e| format!("Message validation failed: {}", e))?;
 
         // Create the full message with payload.
+        let action = message.action.clone();
         let full_message = ValidatedMessage {
             payload,
             ..message
@@ -77,7 +78,7 @@ impl MessageBus {
             }
         }
 
-        Err(format!("No handler found for action '{}'", message.action))
+        Err(format!("No handler found for action '{}'", action))
     }
 
     /// Broadcast a message to all extensions (used for browser events like tab updated).

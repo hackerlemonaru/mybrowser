@@ -63,9 +63,9 @@ impl ProfileSwitcher {
                 egui::Grid::new("profile_grid")
                     .min_col_width(170.0)
                     .min_row_height(170.0)
-                    .spacing(24.0)
+                    .spacing(Vec2::splat(24.0))
                     .show(ui, |ui| {
-                        let profiles: Vec<&Profile> = self.mgr.regular_profiles().collect();
+                        let profiles: Vec<Profile> = self.mgr.regular_profiles().into_iter().cloned().collect();
                         let cols = 3;
 
                         for (i, profile) in profiles.iter().enumerate() {
@@ -135,7 +135,7 @@ impl ProfileSwitcher {
 
         let is_hovered = self.hovered_profile.as_deref() == Some(&profile.id);
 
-        Frame::none()
+        let card = Frame::none()
             .fill(if is_hovered { theme_color.linear_multiply(0.15) } else { Color32::from_gray(28) })
             .rounding(Rounding::same(12.0))
             .stroke(Stroke::new(1.0, theme_color))
@@ -153,7 +153,7 @@ impl ProfileSwitcher {
                         avatar_rect.center(),
                         Align2::CENTER_CENTER,
                         &profile.name.chars().next().unwrap_or('?').to_string(),
-                        egui::TextStyle::Heading,
+                        egui::FontId::proportional(26.0),
                         Color32::WHITE,
                     );
                     ui.allocate_space(Vec2::splat(avatar_size));
@@ -180,7 +180,7 @@ impl ProfileSwitcher {
             });
 
         // Detect hover
-        let rect = ui.last_item_rect();
+        let rect = card.response.rect;
         if rect.contains(ui.input(|i| i.pointer.hover_pos().unwrap_or_default())) {
             self.hovered_profile = Some(profile.id.clone());
         } else if self.hovered_profile.as_deref() == Some(&profile.id) {
@@ -205,7 +205,7 @@ impl ProfileSwitcher {
                         ui.cursor().center(),
                         Align2::CENTER_CENTER,
                         "+",
-                        egui::TextStyle::Heading,
+                        egui::FontId::proportional(26.0),
                         Color32::WHITE,
                     );
                     ui.allocate_space(Vec2::splat(64.0));
@@ -237,7 +237,7 @@ impl ProfileSwitcher {
                         ui.cursor().center(),
                         Align2::CENTER_CENTER,
                         "G",
-                        egui::TextStyle::Heading,
+                        egui::FontId::proportional(26.0),
                         Color32::WHITE,
                     );
                     ui.allocate_space(Vec2::splat(64.0));

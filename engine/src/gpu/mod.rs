@@ -12,6 +12,10 @@
 //! and a basic render loop. Paint commands from Falco's layout/paint
 //! pipeline would be recorded into Vulkan command buffers here.
 
+// The Vulkan backend is written against ash 0.37's builder API. It is opt-in
+// (`--features vulkan`) until it is ported to ash 0.38; the rest of the GPU
+// module (paint commands, the per-profile context handle) always builds.
+#[cfg(feature = "vulkan")]
 pub mod vulkan;
 
 /// A frame ready to be rendered — produced by Falco's paint stage.
@@ -37,6 +41,7 @@ pub enum PaintCommand {
 /// Vulkan device/context for isolation.
 pub struct GpuContext {
     pub profile_id: String,
+    #[cfg(feature = "vulkan")]
     pub renderer: Option<vulkan::VulkanRenderer>,
 }
 
@@ -44,19 +49,25 @@ impl GpuContext {
     pub fn new(profile_id: &str) -> Self {
         Self {
             profile_id: profile_id.to_string(),
+            #[cfg(feature = "vulkan")]
             renderer: None,
         }
     }
 
     pub fn init(&mut self) -> anyhow::Result<()> {
-        self.renderer = Some(vulkan::VulkanRenderer::new()?);
+        #[cfg(feature = "vulkan")]
+        {
+            self.renderer = Some(vulkan::VulkanRenderer::new()?);
+        }
         Ok(())
     }
 
     pub fn render_frame(&mut self, frame: &PaintFrame) -> anyhow::Result<()> {
+        #[cfg(feature = "vulkan")]
         if let Some(r) = &mut self.renderer {
             r.render(frame)?;
         }
+        let _ = frame;
         Ok(())
     }
 }

@@ -58,7 +58,7 @@ impl<K: std::hash::Hash + Eq + Clone, V: Clone> BoundedCache<K, V> {
 
         // Evict oldest entries if we're over limits.
         while entries.len() >= self.max_entries || *current_size + size_bytes > self.max_size_bytes {
-            if let Some((oldest_key, _)) = entries.iter().next().cloned() {
+            if let Some(oldest_key) = entries.keys().next().cloned() {
                 if let Some(old) = entries.remove(&oldest_key) {
                     *current_size = current_size.saturating_sub(old.size_bytes);
                 }

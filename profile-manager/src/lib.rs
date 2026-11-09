@@ -90,7 +90,7 @@ impl ProfileManager {
         self.list
             .active_profile_id
             .as_ref()
-            .and_then(|id| self.list.profiles.iter().find(|p| p.id == id))
+            .and_then(|id| self.list.profiles.iter().find(|p| &p.id == id))
     }
 
     /// Resolve a profile by exact id or by name (case-insensitive).
@@ -170,12 +170,13 @@ impl ProfileManager {
     }
 
     pub fn switch(&mut self, id_or_name: &str) -> Result<(), Box<dyn std::error::Error>> {
-        let profile = self
+        let profile_id = self
             .resolve(id_or_name)
+            .map(|p| p.id.clone())
             .ok_or_else(|| format!("profile '{}' not found", id_or_name))?;
 
-        self.list.active_profile_id = Some(profile.id.clone());
-        if let Some(p) = self.list.profiles.iter_mut().find(|p| p.id == profile.id) {
+        self.list.active_profile_id = Some(profile_id.clone());
+        if let Some(p) = self.list.profiles.iter_mut().find(|p| p.id == profile_id) {
             p.last_used = Some(chrono::Utc::now().to_rfc3339());
         }
         self.save()?;

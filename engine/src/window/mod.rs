@@ -326,7 +326,7 @@ impl Browser {
         };
 
         eprintln!("[falco] fetching: {}", fetch_url);
-        let html = crate::net::fetch(&fetch_url)?;
+        let html = crate::net::fetch(&fetch_url, None)?;
         let css = extract_style_tags(&html);
         Ok((html, css))
     }

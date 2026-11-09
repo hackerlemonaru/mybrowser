@@ -44,10 +44,11 @@ impl ContentScript {
         tab_id: u32,
         page_origin: String,
     ) -> Self {
+        let dom_proxy = DomProxy::new(&extension_id);
         Self {
             extension_id,
             rule,
-            dom_proxy: DomProxy::new(&extension_id),
+            dom_proxy,
             isolated_state: HashMap::new(),
             tab_id,
             page_origin,

@@ -130,6 +130,9 @@ real-video = ["dep:openh264"]
 real-webgl = ["dep:glow"]
 # Real GPU rendering via wgpu (Vulkan/Metal/D3D12).
 real-gpu = ["dep:wgpu"]
+# Direct Vulkan renderer (ash). Opt-in: the backend still targets the ash 0.37
+# builder API while the crate resolves ash 0.38.
+vulkan = []
 
 [dev-dependencies]
 tempfile = "3.10"

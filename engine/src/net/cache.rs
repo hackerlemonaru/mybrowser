@@ -20,6 +20,7 @@ pub struct CachedResponse {
     pub body: Vec<u8>,
     pub etag: Option<String>,
     pub last_modified: Option<String>,
+    #[serde(skip, default = "Instant::now")]
     pub cached_at: Instant,
     pub max_age: Option<Duration>,
 }
@@ -29,9 +30,10 @@ struct CacheStore {
     caches: HashMap<String, HashMap<String, CachedResponse>>,
 }
 
-static CACHE_STORE: Mutex<CacheStore> = Mutex::new(CacheStore {
-    caches: HashMap::new(),
-});
+static CACHE_STORE: once_cell::sync::Lazy<Mutex<CacheStore>> =
+    once_cell::sync::Lazy::new(|| Mutex::new(CacheStore {
+        caches: HashMap::new(),
+    }));
 
 static ACTIVE_PROFILE_CACHE: Mutex<Option<String>> = Mutex::new(None);
 
@@ -41,7 +43,8 @@ pub fn set_active_profile_cache(id: Option<&str>) {
 
 /// Get a cached response by URL, using the active profile's cache.
 pub fn get(url: &str, profile_id: Option<&str>) -> Option<Vec<u8>> {
-    let pid = profile_id.or_else(|| ACTIVE_PROFILE_CACHE.lock().unwrap().as_deref())?;
+    let active = ACTIVE_PROFILE_CACHE.lock().unwrap().clone();
+    let pid = profile_id.or(active.as_deref())?;
     let cache = get_cache(pid);
     let entry = cache.get(url)?;
 
@@ -56,14 +59,16 @@ pub fn get(url: &str, profile_id: Option<&str>) -> Option<Vec<u8>> {
 
 /// Get the ETag for a cached URL.
 pub fn get_etag(url: &str, profile_id: Option<&str>) -> Option<String> {
-    let pid = profile_id.or_else(|| ACTIVE_PROFILE_CACHE.lock().unwrap().as_deref())?;
+    let active = ACTIVE_PROFILE_CACHE.lock().unwrap().clone();
+    let pid = profile_id.or(active.as_deref())?;
     let cache = get_cache(pid);
     cache.get(url)?.etag.clone()
 }
 
 /// Get the Last-Modified for a cached URL.
 pub fn get_last_modified(url: &str, profile_id: Option<&str>) -> Option<String> {
-    let pid = profile_id.or_else(|| ACTIVE_PROFILE_CACHE.lock().unwrap().as_deref())?;
+    let active = ACTIVE_PROFILE_CACHE.lock().unwrap().clone();
+    let pid = profile_id.or(active.as_deref())?;
     let cache = get_cache(pid);
     cache.get(url)?.last_modified.clone()
 }

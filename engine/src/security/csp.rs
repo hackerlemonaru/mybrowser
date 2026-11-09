@@ -28,6 +28,73 @@ pub struct ContentSecurityPolicy {
     pub default_src: Vec<String>,
 }
 
+/// Policy alias used by the JS runner and the HTML sanitizer.
+pub type CspPolicy = ContentSecurityPolicy;
+
+impl ContentSecurityPolicy {
+    /// Parse a CSP header string.
+    pub fn parse(header: &str) -> Self {
+        parse_csp(header)
+    }
+
+    fn script_sources(&self) -> &Vec<String> {
+        if self.script_src.is_empty() {
+            &self.default_src
+        } else {
+            &self.script_src
+        }
+    }
+
+    /// Whether an inline `<script>` may run, given an optional nonce or hash.
+    pub fn allows_inline_script(&self, nonce: Option<&str>, hash: Option<&str>) -> bool {
+        let sources = self.script_sources();
+        if sources.is_empty() {
+            return true;
+        }
+        if sources.iter().any(|s| s == "'unsafe-inline'") {
+            return true;
+        }
+        if let Some(nonce) = nonce {
+            let needle = format!("'nonce-{}'", nonce);
+            if sources.iter().any(|s| *s == needle) {
+                return true;
+            }
+        }
+        if let Some(hash) = hash {
+            if sources.iter().any(|s| s.contains(hash)) {
+                return true;
+            }
+        }
+        false
+    }
+
+    /// Whether a script URL is allowed by `script-src` (falling back to
+    /// `default-src`).
+    pub fn allows_script_src(&self, url: &str) -> bool {
+        if self.script_sources().is_empty() {
+            return true;
+        }
+        is_allowed(self, "script-src", url)
+    }
+}
+
+/// Whether an attribute is safe to keep on a parsed element.
+///
+/// Event handler attributes, `srcdoc` and script URLs are rejected; the rest
+/// are ordinary content attributes.
+pub fn is_safe_attribute(_tag: &str, name: &str, value: &str) -> bool {
+    let name = name.trim().to_ascii_lowercase();
+    if name.starts_with("on") {
+        return false;
+    }
+    if name == "srcdoc" {
+        return false;
+    }
+    let value_lower = value.trim().to_ascii_lowercase();
+    let compact: String = value_lower.chars().filter(|c| !c.is_whitespace()).collect();
+    !(compact.starts_with("javascript:") || compact.starts_with("vbscript:"))
+}
+
 /// Parse a CSP header string into a structured policy.
 pub fn parse_csp(header: &str) -> ContentSecurityPolicy {
     let mut policy = ContentSecurityPolicy::default();

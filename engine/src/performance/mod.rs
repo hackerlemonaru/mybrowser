@@ -17,7 +17,7 @@ use std::time::{Duration, Instant};
 pub const FRAME_BUDGET_MS: u64 = 16;
 
 /// Performance metrics tracked per frame.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 pub struct FrameMetrics {
     pub frame_start: Instant,
     pub style_ms: f64,
@@ -26,6 +26,20 @@ pub struct FrameMetrics {
     pub composite_ms: f64,
     pub total_ms: f64,
     pub dropped: bool,
+}
+
+impl Default for FrameMetrics {
+    fn default() -> Self {
+        Self {
+            frame_start: Instant::now(),
+            style_ms: 0.0,
+            layout_ms: 0.0,
+            paint_ms: 0.0,
+            composite_ms: 0.0,
+            total_ms: 0.0,
+            dropped: false,
+        }
+    }
 }
 
 /// Global performance tracker.
@@ -184,8 +198,8 @@ impl Default for FrameScheduler {
 }
 
 /// CSS property animation classification.
-//! Only transform and opacity can be handled by the compositor thread.
-//! Everything else requires layout/paint on the main thread.
+/// Only transform and opacity can be handled by the compositor thread.
+/// Everything else requires layout/paint on the main thread.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AnimationPropertyClass {
     /// Compositor-only — can be animated on GPU thread without main thread.

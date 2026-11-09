@@ -128,7 +128,7 @@ fn load_data_url(url: &str) -> Option<Image> {
 
 /// Fetch an image from an HTTP/HTTPS URL.
 fn load_http_url(url: &str) -> Option<Image> {
-    let bytes = crate::net::fetch_bytes(url).ok()?;
+    let bytes = crate::net::fetch_bytes(url, None).ok()?;
     decode_image_bytes(&bytes)
 }
 

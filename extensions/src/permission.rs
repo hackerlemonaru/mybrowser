@@ -1,7 +1,7 @@
 //! Extension permission validation.
 //! Implements Spirit of Least Privilege - extensions can only do what they declare.
 
-use crate::manifest::Manifest;
+use crate::manifest::{ContentSecurityPolicy, Manifest};
 
 /// Dangerous permissions that should be flagged or restricted.
 pub const DANGEROUS_PERMISSIONS: &[&str] = &[

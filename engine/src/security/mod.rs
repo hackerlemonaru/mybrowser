@@ -2,6 +2,7 @@
 
 pub mod site_isolation;
 pub mod csp;
+pub mod origin;
 pub mod sandbox;
 pub mod permissions;
 

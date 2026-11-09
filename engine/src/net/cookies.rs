@@ -32,9 +32,10 @@ struct CookieStore {
     jars: HashMap<String, Vec<Cookie>>,
 }
 
-static COOKIE_STORE: Mutex<CookieStore> = Mutex::new(CookieStore {
-    jars: HashMap::new(),
-});
+static COOKIE_STORE: once_cell::sync::Lazy<Mutex<CookieStore>> =
+    once_cell::sync::Lazy::new(|| Mutex::new(CookieStore {
+        jars: HashMap::new(),
+    }));
 
 /// Set the active profile ID for the current thread's cookie operations.
 /// In a multi-threaded browser, each profile's window/tab should pass its
@@ -51,7 +52,8 @@ pub fn active_profile() -> Option<String> {
 
 /// Get the Cookie header value for a URL, using the active profile's jar.
 pub fn get_cookie_header(url: &str, profile_id: Option<&str>) -> Option<String> {
-    let pid = profile_id.or_else(|| active_profile().as_deref())?;
+    let active = active_profile();
+    let pid = profile_id.or(active.as_deref())?;
     let (domain, path, is_secure) = parse_url_parts(url);
     let jar = get_jar(pid);
 
@@ -79,7 +81,10 @@ pub fn get_cookie_header(url: &str, profile_id: Option<&str>) -> Option<String> 
 
 /// Process Set-Cookie headers from a response, storing in the active profile's jar.
 pub fn process_response_cookies(url: &str, resp: &ureq::Response, profile_id: Option<&str>) {
-    let pid = profile_id.or_else(|| active_profile().as_deref())?;
+    let active = active_profile();
+    let Some(pid) = profile_id.or(active.as_deref()) else {
+        return;
+    };
     let (domain, _, _) = parse_url_parts(url);
 
     for header_name in resp.headers_names() {

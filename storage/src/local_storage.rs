@@ -5,6 +5,7 @@
 use crate::{ensure_dir, origin_key, read_json, write_json, StorageKind};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
+use std::fs;
 use std::path::Path;
 
 /// A localStorage entry for one origin.

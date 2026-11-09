@@ -102,7 +102,7 @@ impl ExtensionManager {
 
         // Start the extension host process.
         let host = host::HostProcess::spawn(&ext)?;
-        self.host_processes.insert(ext.id.clone(), host.handle());
+        self.host_processes.insert(ext.id.clone(), host.handle);
 
         self.extensions.insert(ext.id.clone(), ext.clone());
         self.save_extension(&ext)?;
@@ -139,7 +139,9 @@ impl ExtensionManager {
     pub fn set_enabled(&mut self, extension_id: &str, enabled: bool) -> Result<(), Box<dyn std::error::Error>> {
         if let Some(ext) = self.extensions.get_mut(extension_id) {
             ext.enabled = enabled;
-            self.save_extension(ext)?;
+        }
+        if let Some(ext) = self.extensions.get(extension_id).cloned() {
+            self.save_extension(&ext)?;
         }
         Ok(())
     }
@@ -163,16 +165,18 @@ impl ExtensionManager {
         let content = std::fs::read_to_string(&manifest_path)?;
         let manifest: manifest::Manifest = serde_json::from_str(&content)?;
 
-        let id = manifest.id.as_deref()
-            .unwrap_or_else(|| {
-                // Derive ID from path hash (Chrome uses 32-char hash of extension key/path)
+        // Derive the ID from the path hash when the manifest omits one
+        // (Chrome uses a 32-char hash of the extension key/path).
+        let id = match manifest.id.clone() {
+            Some(id) => id,
+            None => {
                 use std::collections::hash_map::DefaultHasher;
                 use std::hash::{Hash, Hasher};
                 let mut hasher = DefaultHasher::new();
                 dir.hash(&mut hasher);
                 format!("{:032x}", hasher.finish())
-            })
-            .to_string();
+            }
+        };
 
         Ok(Extension {
             id,

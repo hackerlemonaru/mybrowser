@@ -33,10 +33,13 @@ The browser window (`browser/src/window.rs`) is a full Google Chrome-like recons
 
 ```
 [Tab Strip]        tabs + `+` new-tab button
-[Nav Toolbar]      back/forward/reload | omnibox | star | extensions | profile | 3-dot
+[Nav Toolbar]      back/forward/reload | omnibox | extensions | VPN | downloads | profile | 3-dot
 [Bookmarks Bar]    favicon + title per bookmark (only if bookmarks exist)
 [Viewport]         Falco engine render output, fills all remaining space
 ```
+
+There is no AI Mode / "Ask Gemini" chip and no "Customise Chrome" pill: the toolbar
+carries the profile tools instead, and everything else lives in the 3-dot menu.
 
 ### UI constraints honored
 - **No separate "+ New Tab" button** — the `+` sits directly beside the open tabs in the tab strip.
@@ -45,25 +48,43 @@ The browser window (`browser/src/window.rs`) is a full Google Chrome-like recons
 - **Each profile gets completely fresh settings** — VPN, proxy, theme, location, dummy profile all isolated per profile.
 - **Dark theme matching Chrome** — navbar ~`#202124`, active tab white-ish.
 
+### Design system
+
+All chrome drawing lives in `browser/src/ui/`, so the window code only composes widgets:
+
+- `theme.rs` — Chrome tokens: `Palette::dark()` (the tinted burgundy theme) and `Palette::light()`, plus `Metrics` (42dp tab strip, 32dp tabs, 48dp toolbar, 34dp pill omnibox, 46dp window controls).
+- `fonts.rs` — embedded Roboto (Regular + Medium) and Poppins for the "Google" wordmark. Fonts are installed *before* the first frame: egui applies `set_fonts` at frame start, so a lazy install would lay the first frame out against the default families.
+- `icons.rs` — ~45 icons drawn as vectors on Material's 24×24 grid (no bitmaps), plus the four-colour Google "G" mark.
+- `widgets.rs` — rounded fills/strokes, drop shadows, 8% state layers, chips, gradients, text clipping/ellipsis.
+
 ### Themes
-`Theme::Light` / `Theme::Dark` with per-component colors:
-- Frame / toolbar / active tab / inactive tab / text / text-muted / hover / border
-- Dark navbar ≈ `#202124`; active tab is white-ish.
+`Palette::Light` / `Palette::Dark`, each with per-component colours (frame, toolbar, active tab, hover, omnibox, menus, New Tab surfaces).
+- Dark is the tinted theme from the reference design: `#2B1B1B` strip/toolbar, `#3B2626` active tab, `#3A2626` omnibox, `#6B4747` New Tab page, `#F6CDCD` wordmark.
 - Theme toggle lives in the 3-dot menu → Appearance.
 
 ### 3-dot Chrome menu
-Opened from the toolbar, positioned under the menu button. Contains:
+Opened from the toolbar, positioned under the menu button and clamped so it never
+runs off the bottom of the window. Contains:
 - New tab (Ctrl+T) / Reopen closed tab (Ctrl+Shift+T)
-- History (Ctrl+H) / Downloads (Ctrl+J) / Bookmarks manager
-- Appearance: Light / Dark theme toggle + "Show bookmarks bar" checkbox
-- Exit
+- New window / New Incognito window
+- History (Ctrl+H) / Downloads (Ctrl+J) / Bookmarks manager / Passwords
+- VPN toggle (per profile), Dummy system profile, Location profile
+- Zoom / Print / Find
+- Appearance: Light / Dark theme + "Show bookmarks bar"
+- Settings / Help / Exit
 
-All controls connect to real browser functionality (tab open/close/switch, theme persistence, bookmarks bar visibility).
+All controls connect to real browser functionality (tab open/close/switch, theme
+persistence, bookmarks bar visibility, downloads and history lists).
+
+Popovers and dialogs no longer close on the very click that opened them: the
+click is ignored for the frame the popup was created in (`popup_frame` /
+`dialog_frame`), which is what used to make the 3-dot menu flash and disappear.
 
 ### Rendering
 - `egui_glow` 0.29 winit API: `run()` / `paint()` every frame.
 - OpenGL context created in `browser/src/gl/mod.rs` via `libloading` + `raw-window-handle` 0.6.
-- Legacy `glXCreateContext` fallback for Xvfb (where `glXCreateContextAttribsARB` is unavailable).
+- **Linux:** GLX with a legacy `glXCreateContext` fallback for Xvfb (where `glXCreateContextAttribsARB` is unavailable).
+- **Windows:** WGL (`opengl32` + `gdi32`, with `GetDC` from `user32`) so the same UI builds and runs natively; the GL version/renderer is logged on startup.
 - Window explicitly set visible (`window.set_visible(true)`) to fix black screen on noVNC.
 - Falco engine renders to a texture; the viewport displays the engine's render-to-texture output.
 

@@ -1316,7 +1316,7 @@ fn paint_image(box_node: &LayoutBox, out: &mut Vec<PaintCommand>) {
             let base_url = crate::image::get_base_url();
             let resolved = crate::image::resolve_url_pub(src, &base_url);
             if resolved.starts_with("http") {
-                crate::net::fetch(&resolved).unwrap_or_default()
+                crate::net::fetch(&resolved, None).unwrap_or_default()
             } else {
                 std::fs::read_to_string(&resolved).unwrap_or_default()
             }
