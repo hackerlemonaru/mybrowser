@@ -1,10 +1,12 @@
+//! Chrome-like profile manager for the browser.
+//! Each profile owns an isolated data directory:
+//!   cookies/, history/, bookmarks/, extensions/, cache/, localstorage/, sessions/
+//! Switching profiles = switching the active data directory — zero session leakage.
+
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::{Path, PathBuf};
 
-/// A Chrome-like browser profile. Each profile owns an isolated data
-/// directory (cookies, history, bookmarks, extensions, cache, …) so
-/// workloads never leak into one another.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Profile {
     pub id: String,
@@ -27,8 +29,7 @@ pub struct ProfileManager {
 }
 
 impl ProfileManager {
-    /// Create / open the profile store under the platform data dir,
-    /// e.g. ~/.local/share/mybrowser/profiles  (Linux)
+    /// Create / open the profile store under the platform data dir.
     pub fn new() -> Result<Self, Box<dyn std::error::Error>> {
         let mut profiles_dir = dirs::data_dir()
             .unwrap_or_else(|| std::env::current_dir().unwrap());
@@ -81,7 +82,6 @@ impl ProfileManager {
         let data_dir = self.profiles_dir.join(&id);
         fs::create_dir_all(&data_dir)?;
 
-        // Chrome-like isolated sub-directories per profile.
         for sub in [
             "cookies",
             "history",
@@ -134,7 +134,6 @@ impl ProfileManager {
             .ok_or_else(|| format!("profile '{}' not found", id))?;
         let profile = self.list.profiles.remove(idx);
 
-        // Remove the profile's entire isolated data directory.
         let _ = fs::remove_dir_all(&profile.data_dir);
 
         if self.list.active_profile_id.as_deref() == Some(id) {

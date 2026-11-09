@@ -1,0 +1,7 @@
+/target
+**/*.rs.bak
+Cargo.lock
+*.png
+*.jpg
+.profiles/
+mybrowser-profiles/
