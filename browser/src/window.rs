@@ -271,29 +271,57 @@ impl BrowserWindow {
             .fill(self.theme.tab_inactive())
             .inner_margin(egui::vec2(8.0, 4.0))
             .show(ui, |ui| {
+                let controls_width = 190.0;
+                let tab_region_width = (ui.available_width() - controls_width).max(260.0);
                 ui.horizontal(|ui| {
                     let ids = self.tab_manager.tab_order().to_vec();
-                    // Chrome keeps tabs usable by shrinking them as the strip fills.
-                    // Avoid oversized cards that make the shell feel like a dashboard.
-                    let tab_width = ((ui.available_width() - 36.0) / ids.len().max(1) as f32)
+                    let tab_width = ((tab_region_width - 36.0) / ids.len().max(1) as f32)
                         .clamp(118.0, 220.0);
 
-                    egui::ScrollArea::horizontal()
-                        .id_source("chrome_tab_strip")
-                        .auto_shrink([false, false])
-                        .show(ui, |ui| {
-                            ui.horizontal(|ui| {
-                                for id in ids {
-                                    if let Some(tab) = self.tab_manager.get_tab(id).cloned() {
-                                        self.render_tab_card(ui, &tab, self.theme, tab_width);
-                                    }
-                                }
-                            });
-                        });
+                    ui.allocate_ui_with_layout(
+                        Vec2::new(tab_region_width, 32.0),
+                        Layout::left_to_right(Align::Center),
+                        |ui| {
+                            egui::ScrollArea::horizontal()
+                                .id_source("chrome_tab_strip")
+                                .auto_shrink([false, false])
+                                .show(ui, |ui| {
+                                    ui.horizontal(|ui| {
+                                        for id in ids {
+                                            if let Some(tab) = self.tab_manager.get_tab(id).cloned() {
+                                                self.render_tab_card(ui, &tab, self.theme, tab_width);
+                                            }
+                                        }
+                                    });
+                                });
+                            if browser_icon_button(ui, BrowserIcon::Plus, "New tab", true, self.theme).clicked() {
+                                self.open_new_tab();
+                            }
+                        },
+                    );
 
-                    if browser_icon_button(ui, BrowserIcon::Plus, "New tab", true, self.theme).clicked() {
-                        self.open_new_tab();
-                    }
+                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                        if browser_icon_button(ui, BrowserIcon::Close, "Close window", true, self.theme).clicked() {
+                            ui.ctx().send_viewport_cmd(egui::ViewportCommand::Close);
+                        }
+                        if browser_icon_button(ui, BrowserIcon::Maximize, "Maximize window", true, self.theme).clicked() {
+                            ui.ctx().send_viewport_cmd(egui::ViewportCommand::Maximized(true));
+                        }
+                        if browser_icon_button(ui, BrowserIcon::Minimize, "Minimize window", true, self.theme).clicked() {
+                            ui.ctx().send_viewport_cmd(egui::ViewportCommand::Minimized(true));
+                        }
+                        ui.separator();
+                        ui.add(
+                            egui::Button::new(
+                                RichText::new("✦  Ask Gemini")
+                                    .size(12.0)
+                                    .color(self.theme.text()),
+                            )
+                            .fill(self.theme.hover())
+                            .rounding(Rounding::same(14.0))
+                            .min_size(Vec2::new(100.0, 28.0)),
+                        );
+                    });
                 });
             });
     }
@@ -513,6 +541,24 @@ impl BrowserWindow {
                     }
                     if browser_icon_button(
                         ui,
+                        BrowserIcon::History,
+                        "History",
+                        true,
+                        self.theme,
+                    ).clicked() {
+                        self.show_history = true;
+                    }
+                    if browser_icon_button(
+                        ui,
+                        BrowserIcon::Download,
+                        "Downloads",
+                        true,
+                        self.theme,
+                    ).clicked() {
+                        self.show_downloads = true;
+                    }
+                    if browser_icon_button(
+                        ui,
                         BrowserIcon::Profile,
                         "Profile",
                         true,
@@ -613,18 +659,59 @@ impl BrowserWindow {
             if active_is_blank {
                 ui.centered_and_justified(|ui| {
                     ui.vertical_centered(|ui| {
-                        ui.label(
-                            RichText::new("MyBrowser")
-                                .size(30.0)
-                                .strong()
-                                .color(self.theme.text()),
-                        );
-                        ui.add_space(8.0);
-                        ui.label(
-                            RichText::new("Search the web or enter a URL above")
-                                .size(13.0)
-                                .color(self.theme.text_muted()),
-                        );
+                        ui.horizontal(|ui| {
+                            ui.label(RichText::new("G").size(58.0).strong().color(Color32::from_rgb(66, 133, 244)));
+                            ui.label(RichText::new("o").size(58.0).strong().color(Color32::from_rgb(234, 67, 53)));
+                            ui.label(RichText::new("o").size(58.0).strong().color(Color32::from_rgb(251, 188, 5)));
+                            ui.label(RichText::new("g").size(58.0).strong().color(Color32::from_rgb(66, 133, 244)));
+                            ui.label(RichText::new("l").size(58.0).strong().color(Color32::from_rgb(52, 168, 83)));
+                            ui.label(RichText::new("e").size(58.0).strong().color(Color32::from_rgb(234, 67, 53)));
+                        });
+                        ui.add_space(20.0);
+                        Frame::none()
+                            .fill(match self.theme {
+                                Theme::Light => Color32::from_rgb(255, 255, 255),
+                                Theme::Dark => Color32::from_rgb(32, 33, 36),
+                            })
+                            .rounding(Rounding::same(24.0))
+                            .stroke(Stroke::new(1.0, self.theme.border()))
+                            .inner_margin(egui::vec2(18.0, 2.0))
+                            .show(ui, |ui| {
+                                ui.set_min_width(560.0_f32.min(ui.available_width()));
+                                ui.horizontal(|ui| {
+                                    paint_browser_icon(
+                                        ui.painter(),
+                                        Rect::from_min_size(ui.cursor().min, Vec2::splat(18.0)),
+                                        BrowserIcon::Globe,
+                                        self.theme.text_muted(),
+                                    );
+                                    ui.add_space(10.0);
+                                    ui.label(
+                                        RichText::new("Search Google or type a URL")
+                                            .size(14.0)
+                                            .color(self.theme.text_muted()),
+                                    );
+                                });
+                            });
+                        ui.add_space(26.0);
+                        ui.vertical_centered(|ui| {
+                            let response = ui.add(
+                                egui::Button::new(
+                                    RichText::new("+")
+                                        .size(22.0)
+                                        .color(self.theme.text()),
+                                )
+                                .fill(self.theme.hover())
+                                .rounding(Rounding::same(22.0))
+                                .min_size(Vec2::splat(44.0)),
+                            );
+                            response.on_hover_text("Add shortcut");
+                            ui.label(
+                                RichText::new("Add shortcut")
+                                    .size(12.0)
+                                    .color(self.theme.text_muted()),
+                            );
+                        });
                     });
                 });
             }
@@ -1195,8 +1282,12 @@ enum BrowserIcon {
     Globe,
     Star,
     Extensions,
+    History,
+    Download,
     Profile,
     Menu,
+    Minimize,
+    Maximize,
     Close,
     Plus,
     Folder,
@@ -1258,6 +1349,21 @@ fn paint_browser_icon(painter: &egui::Painter, rect: Rect, icon: BrowserIcon, co
             }
             painter.add(egui::Shape::convex_polygon(points, Color32::TRANSPARENT, stroke));
         }
+        BrowserIcon::History => {
+            painter.circle_stroke(c, 7.0, stroke);
+            painter.line_segment([c, egui::pos2(c.x, c.y - 4.0)], stroke);
+            painter.line_segment([c, egui::pos2(c.x + 4.0, c.y + 2.0)], stroke);
+            painter.line_segment(
+                [egui::pos2(c.x - 8.0, c.y - 3.0), egui::pos2(c.x - 5.0, c.y - 7.0)],
+                stroke,
+            );
+        }
+        BrowserIcon::Download => {
+            painter.line_segment([egui::pos2(c.x, c.y - 7.0), egui::pos2(c.x, c.y + 3.0)], stroke);
+            painter.line_segment([egui::pos2(c.x - 4.0, c.y), egui::pos2(c.x, c.y + 4.0)], stroke);
+            painter.line_segment([egui::pos2(c.x + 4.0, c.y), egui::pos2(c.x, c.y + 4.0)], stroke);
+            painter.line_segment([egui::pos2(c.x - 7.0, c.y + 7.0), egui::pos2(c.x + 7.0, c.y + 7.0)], stroke);
+        }
         BrowserIcon::Extensions => {
             let body = Rect::from_center_size(c, Vec2::splat(12.0));
             painter.rect_stroke(body, Rounding::same(2.0), stroke);
@@ -1276,6 +1382,19 @@ fn paint_browser_icon(painter: &egui::Painter, rect: Rect, icon: BrowserIcon, co
             painter.line_segment(
                 [egui::pos2(c.x, c.y + 1.5), egui::pos2(c.x + 4.5, c.y + 4.0)],
                 Stroke::new(1.5, color),
+            );
+        }
+        BrowserIcon::Minimize => {
+            painter.line_segment(
+                [egui::pos2(c.x - 5.0, c.y + 4.0), egui::pos2(c.x + 5.0, c.y + 4.0)],
+                stroke,
+            );
+        }
+        BrowserIcon::Maximize => {
+            painter.rect_stroke(
+                Rect::from_center_size(c, Vec2::splat(10.0)),
+                Rounding::same(1.0),
+                stroke,
             );
         }
         BrowserIcon::Menu => {
