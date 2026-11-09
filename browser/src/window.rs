@@ -21,8 +21,6 @@ use egui::{
     Align, Align2, Color32, Frame, Layout, Rect, RichText, Rounding, Stroke, Sense, TextEdit,
     TextureHandle, TextureOptions, Vec2, FontId, Key,
 };
-use std::collections::HashMap;
-use std::sync::Arc;
 use std::time::Instant;
 
 /// UI theme.
@@ -857,15 +855,6 @@ impl BrowserWindow {
                 persist_dummy_config(self);
             }
         }
-    }
-}
-
-fn menu_item<F>(ui: &mut egui::Ui, label: &str, on_click: F)
-where
-    F: FnOnce(&mut egui::Ui),
-{
-    if ui.button(label).clicked() {
-        on_click(ui);
     }
 }
 
