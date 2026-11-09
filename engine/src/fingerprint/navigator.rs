@@ -14,14 +14,17 @@ pub struct UserAgent {
 }
 
 impl UserAgent {
-    pub fn generate(_device: &crate::fingerprint::DeviceProfile, rng: &mut SimpleRng) -> Self {
-        // In production, use the device profile's template.
-        // For now, generate a consistent UA.
-        let full = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36".to_string();
+    pub fn generate(device: &crate::fingerprint::DeviceProfile, rng: &mut SimpleRng) -> Self {
+        // Use device profile's UA template for internal consistency.
+        let full = device.user_agent_template.to_string();
+
+        // Extract version from template (e.g., Chrome/120.0.0.0).
+        let ua_full_version = "120.0.0.0".to_string();
+
         Self {
             full,
-            platform: "Win32".to_string(),
-            ua_full_version: "120.0.0.0".to_string(),
+            platform: device.platform.to_string(),
+            ua_full_version,
         }
     }
 
@@ -43,15 +46,26 @@ pub struct ClientHints {
 }
 
 impl ClientHints {
-    pub fn generate(_device: &crate::fingerprint::DeviceProfile, rng: &mut SimpleRng) -> Self {
+    pub fn generate(device: &crate::fingerprint::DeviceProfile, rng: &mut SimpleRng) -> Self {
+        // Determine mobile based on platform.
+        let is_mobile = device.platform.contains("Android") || device.platform.contains("iPhone");
+
         Self {
-            sec_ch_ua: "\"Not_A Brand\";v=\"8\", \"Chromium\";v=\"120\", \"Google Chrome\";v=\"120\"".to_string(),
-            sec_ch_ua_mobile: "?0".to_string(),
-            sec_ch_ua_platform: "\"Windows\"".to_string(),
-            sec_ch_ua_platform_version: "\"10.0.0\"".to_string(),
+            sec_ch_ua: device.sec_ch_ua.to_string(),
+            sec_ch_ua_mobile: if is_mobile { "?1".to_string() } else { "?0".to_string() },
+            sec_ch_ua_platform: device.sec_ch_ua_platform.to_string(),
+            sec_ch_ua_platform_version: device.sec_ch_ua_platform_version.to_string(),
             sec_ch_ua_full_version: "\"120.0.0.0\"".to_string(),
-            sec_ch_ua_arch: "\"x86\"".to_string(),
-            sec_ch_ua_model: "\"\"".to_string(),
+            sec_ch_ua_arch: if device.platform.contains("ARM") || device.platform.contains("Android") || device.platform.contains("iPhone") {
+                "\"arm\"".to_string()
+            } else {
+                "\"x86\"".to_string()
+            },
+            sec_ch_ua_model: if is_mobile {
+                format!("\"{}\"", device.name)
+            } else {
+                "\"\"".to_string()
+            },
         }
     }
 }
@@ -65,14 +79,10 @@ pub struct FontList {
 }
 
 impl FontList {
-    pub fn generate(_device: &crate::fingerprint::DeviceProfile, rng: &mut SimpleRng) -> Self {
-        let fonts = vec![
-            "Arial".to_string(),
-            "Times New Roman".to_string(),
-            "Calibri".to_string(),
-            "Segoe UI".to_string(),
-            "Consolas".to_string(),
-        ];
+    pub fn generate(device: &crate::fingerprint::DeviceProfile, rng: &mut SimpleRng) -> Self {
+        // Use device profile fonts — consistent per device type.
+        let fonts = device.fonts.iter().map(|f| f.to_string()).collect();
+
         Self {
             fonts,
             limited: false,

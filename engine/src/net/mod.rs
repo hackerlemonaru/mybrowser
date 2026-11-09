@@ -10,23 +10,210 @@
 //! - Content-Type sniffing + charset detection
 //! - URL resolution
 
+pub mod adblock;
 pub mod cache;
 pub mod cookies;
+pub mod download;
+pub mod password_manager;
 pub mod proxy;
 pub mod redirect;
 pub mod websocket;
 
 use std::path::Path;
+use once_cell::sync::Lazy;
+
+pub use crate::custom_domain::{
+    CustomDomainRegistry, DomainEntry, HfConfig, HfClient, ResolutionLog, ResolutionSource,
+    ResolutionLogStore,
+};
+
+use crate::custom_domain::ResolutionLog as _ResolutionLog;
+
+// Global custom domain registry — initialized by the browser main process.
+// Each profile gets its own isolated custom_domains.json in its data dir.
+pub static CUSTOM_DOMAIN_REGISTRY: Lazy<std::sync::Mutex<Option<CustomDomainRegistry>>> =
+    Lazy::new(|| std::sync::Mutex::new(None));
+
+/// Global resolution log store — records every custom domain resolution
+/// for presentation/storage (everything under record).
+pub static RESOLUTION_LOG: Lazy<ResolutionLogStore> = Lazy::new(|| ResolutionLogStore::new(10000));
+
+/// Initialize the global custom domain registry with the profiles directory.
+/// Call this once at browser startup.
+pub fn init_custom_domain_registry(profiles_dir: &std::path::Path) -> anyhow::Result<()> {
+    let registry = CustomDomainRegistry::new(profiles_dir.to_path_buf())?;
+    let mut guard = CUSTOM_DOMAIN_REGISTRY.lock().unwrap();
+    *guard = Some(registry);
+    Ok(())
+}
+
+/// Get the global registry (returns None if not initialized).
+fn registry() -> Option<std::sync::MutexGuard<'static, std::sync::Mutex<Option<CustomDomainRegistry>>>> {
+    // Can't return a lock guard from a function easily, so we use a helper.
+    None
+}
+
+/// Resolve a custom domain URL to its serving URL, applying rate limiting
+/// and logging. Returns the resolved URL if it's a custom domain, or the
+/// original URL if not.
+fn resolve_custom_domain_url(
+    url: &str,
+    profile_id: Option<&str>,
+) -> anyhow::Result<String> {
+    let Some(pid) = profile_id else {
+        return Ok(url.to_string());
+    };
+
+    let domain = extract_host(url);
+    let domain = match domain {
+        Some(d) => d,
+        None => return Ok(url.to_string()),
+    };
+
+    // Only intercept custom TLD domains
+    if !crate::custom_domain::CustomDomainRegistry::is_custom_domain(domain) {
+        return Ok(url.to_string());
+    }
+
+    let registry_guard = CUSTOM_DOMAIN_REGISTRY.lock().unwrap();
+    let registry = match registry_guard.as_ref() {
+        Some(r) => r,
+        None => return Ok(url.to_string()),
+    };
+
+    // Rate limit HF requests
+    if !registry.hf_request_allowed(pid) {
+        anyhow::bail!(
+            "Rate limit exceeded for custom domain resolution on profile '{}'. Try again later.",
+            pid
+        );
+    }
+
+    // Resolve from local registry first
+    match registry.resolve(pid, domain) {
+        crate::custom_domain::ResolutionResult::Resolved { serving_url, domain: resolved_domain } => {
+            // Record the resolution
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_secs())
+                .unwrap_or(0);
+            RESOLUTION_LOG.record(crate::custom_domain::ResolutionLog {
+                timestamp: now,
+                profile_id: pid.to_string(),
+                domain: resolved_domain,
+                serving_url: serving_url.clone(),
+                source: crate::custom_domain::ResolutionSource::LocalRegistry,
+                success: true,
+                error: None,
+            });
+            // Update resolve count
+            registry.record_resolution(pid, domain);
+            return Ok(replace_host(url, &serving_url));
+        }
+        crate::custom_domain::ResolutionResult::NotRegistered => {
+            // Try HF backend if enabled
+            if registry.hf_enabled() {
+                let hf_client = HfClient::new(registry.hf_config());
+                match hf_client.resolve_domain(domain, pid) {
+                    Ok(serving_url) => {
+                        let now = std::time::SystemTime::now()
+                            .duration_since(std::time::UNIX_EPOCH)
+                            .map(|d| d.as_secs())
+                            .unwrap_or(0);
+                        RESOLUTION_LOG.record(crate::custom_domain::ResolutionLog {
+                            timestamp: now,
+                            profile_id: pid.to_string(),
+                            domain: domain.to_string(),
+                            serving_url: serving_url.clone(),
+                            source: crate::custom_domain::ResolutionSource::HfBackend,
+                            success: true,
+                            error: None,
+                        });
+                        return Ok(replace_host(url, &serving_url));
+                    }
+                    Err(crate::custom_domain::HfError::NotRegistered) => {
+                        // Domain not registered anywhere — return original URL
+                        // (browser will show DNS error or similar)
+                        return Ok(url.to_string());
+                    }
+                    Err(crate::custom_domain::HfError::RateLimited) => {
+                        anyhow::bail!("HF backend rate limited. Try again later.");
+                    }
+                    Err(e) => {
+                        eprintln!("[custom-domain] HF resolve error for {}: {}", domain, e);
+                        return Ok(url.to_string());
+                    }
+                }
+            }
+            // Not registered and HF not enabled — return original URL
+            Ok(url.to_string())
+        }
+        crate::custom_domain::ResolutionResult::NotCustomDomain => Ok(url.to_string()),
+    }
+}
+
+/// Extract the host from a URL string.
+fn extract_host(url: &str) -> Option<&str> {
+    let stripped = url.strip_prefix("https://").or_else(|| url.strip_prefix("http://"))?;
+    let host = stripped.split('/').next()?;
+    let host = host.split(':').next()?; // Remove port
+    Some(host)
+}
+
+/// Replace the host in a URL with a new host (extracted from serving_url).
+fn replace_host(url: &str, serving_url: &str) -> String {
+    // Extract just the host from the serving URL (strip scheme and path)
+    let host = serving_url
+        .strip_prefix("https://")
+        .or_else(|| serving_url.strip_prefix("http://"))
+        .unwrap_or(serving_url)
+        .split('/')
+        .next()
+        .unwrap_or(serving_url)
+        .split(':')
+        .next()
+        .unwrap_or(serving_url);
+
+    // Determine the scheme of the original URL
+    if url.starts_with("https://") {
+        if let Some(rest) = url.strip_prefix("https://") {
+            if let Some(path_start) = rest.find('/') {
+                format!("https://{}{}", host, &rest[path_start..])
+            } else {
+                format!("https://{}", host)
+            }
+        } else {
+            format!("https://{}", host)
+        }
+    } else if url.starts_with("http://") {
+        if let Some(rest) = url.strip_prefix("http://") {
+            if let Some(path_start) = rest.find('/') {
+                format!("http://{}{}", host, &rest[path_start..])
+            } else {
+                format!("http://{}", host)
+            }
+        } else {
+            format!("http://{}", host)
+        }
+    } else {
+        url.to_string()
+    }
+}
 
 /// Fetch a URL with cookies, cache, and redirect following.
 /// `profile_id` selects which profile's cookie jar and cache to use.
+/// If the URL uses a custom TLD (one of the 118 custom domains), it is
+/// resolved to its serving URL before fetching — HF is only contacted
+/// for registered custom domains.
 pub fn fetch(url: &str, profile_id: Option<&str>) -> anyhow::Result<String> {
-    fetch_with_options(url, profile_id, FetchOptions::default())
+    let resolved_url = resolve_custom_domain_url(url, profile_id)?;
+    fetch_with_options(&resolved_url, profile_id, FetchOptions::default())
 }
 
 /// Fetch a URL with raw bytes.
 pub fn fetch_bytes(url: &str, profile_id: Option<&str>) -> anyhow::Result<Vec<u8>> {
-    fetch_bytes_with_options(url, profile_id, FetchOptions::default())
+    let resolved_url = resolve_custom_domain_url(url, profile_id)?;
+    fetch_bytes_with_options(&resolved_url, profile_id, FetchOptions::default())
 }
 
 /// Options for a fetch request.
@@ -97,13 +284,34 @@ pub fn fetch_bytes_with_options(
         0
     };
 
-    // Get per-profile proxy config.
-    let proxy_config = profile_id.and_then(|pid| proxy::ProxyManager::get_config(pid));
-    let use_proxy = proxy_config.as_ref()
-        .map(|c| !proxy::ProxyManager::should_bypass(pid.unwrap(), url))
-        .unwrap_or(false);
+    // Get per-profile proxy config (once, outside the loop).
+    let use_proxy = match profile_id {
+        Some(pid) => !proxy::ProxyManager::should_bypass(pid, url),
+        None => false,
+    };
 
     loop {
+        // Adblock check — block requests matching filter rules.
+        if let Some(pid) = profile_id {
+            match adblock::check_request(
+                &current_url,
+                &current_url,  // source URL = current URL (no referer chain tracking yet)
+                "script",
+                "GET",
+                Some(pid),
+            ) {
+                Ok(adblock::NetworkDecision::Block) => {
+                    eprintln!("[falco:net:adblock] blocked: {}", current_url);
+                    return Err(anyhow::anyhow!("Request blocked by adblock filter: {}", current_url));
+                }
+                Ok(adblock::NetworkDecision::Allow) => {}
+                Err(e) => {
+                    eprintln!("[falco:net:adblock] check failed: {}", e);
+                    // Fail open — allow the request if adblock check fails
+                }
+            }
+        }
+
         // Check cache (profile-aware).
         if opts.use_cache {
             if let Some(cached) = cache::get(&current_url, profile_id) {
@@ -111,9 +319,24 @@ pub fn fetch_bytes_with_options(
             }
         }
 
+        // Build ureq agent with optional proxy.
+        let mut agent_builder = ureq::AgentBuilder::new()
+            .timeout(std::time::Duration::from_secs(15));
+
+        if use_proxy {
+            if let Some(pid) = profile_id {
+                if let Some(proxy_url) = proxy::ProxyManager::proxy_url(pid) {
+                    if let Ok(proxy) = ureq::Proxy::new(&proxy_url) {
+                        agent_builder = agent_builder.proxy(proxy);
+                    }
+                }
+            }
+        }
+
+        let agent = agent_builder.build();
+
         // Build request with browser-like headers.
-        let mut req = ureq::get(&current_url)
-            .timeout(std::time::Duration::from_secs(15))
+        let mut req = agent.get(&current_url)
             .set("User-Agent", &opts.user_agent)
             .set(
                 "Accept",
@@ -127,13 +350,6 @@ pub fn fetch_bytes_with_options(
             .set("Sec-Fetch-Mode", "navigate")
             .set("Sec-Fetch-Site", "none")
             .set("Sec-Fetch-User", "?1");
-
-        // Apply per-profile proxy (ureq supports proxy via environment or URL).
-        if use_proxy {
-            if let Some(proxy_url) = &proxy_config.and_then(|c| proxy::ProxyManager::proxy_url(pid.unwrap())) {
-                req = req.proxy(ureq::Proxy::new(proxy_url)?);
-            }
-        }
 
         if let Some(ref referer) = opts.referer {
             req = req.set("Referer", referer);

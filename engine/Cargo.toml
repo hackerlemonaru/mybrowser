@@ -20,7 +20,7 @@ path = "src/lib.rs"
 
 [dependencies]
 # HTTP fetch — small, blocking. TLS enabled via "tls" feature.
-ureq = { version = "2.10", default-features = false, features = ["gzip", "brotli"] }
+ureq = { version = "2.10", default-features = false, features = ["gzip", "brotli", "socks-proxy", "native-tls", "tls"] }
 # Gzip decompression for .svgz files (gzip-compressed SVG served as raw bytes).
 flate2 = "1.0"
 # Brotli decompression for HTTP responses.
@@ -39,18 +39,22 @@ rustybuzz = "0.20"
 ttf-parser = "0.25"
 # Error handling.
 anyhow = "1.0"
-chrono = "0.4"
+chrono = { version = "0.4", features = ["serde"] }
 # JSON serialization for profile-aware cookie/cache persistence.
 serde = { version = "1", features = ["derive"] }
+serde_json = "1"
 # Direct Vulkan GPU access (NOT WebGPU/wgpu) — same as game engines.
 ash = "0.38"
 ash-window = "0.13"
 raw-window-handle = "0.6"
 winit = "0.30"
+egui = "0.29"
 # OnceCell for global managers.
 once_cell = "1"
-# ureq proxy support.
-ureq = { version = "2.10", default-features = false, features = ["gzip", "brotli", "proxy"] }
+# Brave's adblock-rust — native ad & tracker blocking (uBlock-compatible syntax).
+# Used for per-profile network filtering and cosmetic filtering.
+adblock = { version = "0.13", features = ["css-validation", "resource-assembler"] }
+
 # Arena allocator for per-page memory (no leaks, O(1) free).
 bumpalo = "3.18"
 # Live window + input — pure Rust, no system deps.
@@ -59,7 +63,13 @@ minifb = "0.27"
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif", "bmp", "webp", "ico", "tiff", "tga", "dds", "rayon", "avif"] }
 # Base64 decoding for data: URLs.
 base64 = "0.22"
+# URL parsing — for custom domain validation and serving URL safety checks.
+url = "2.5"
+# Form URL encoding — for HF API query parameters.
+urlencoding = "2.1"
 rand = "0.8"
+# UUID for unique IDs (tabs, groups, profiles).
+uuid = { version = "1", features = ["v4"] }
 # libc bindings for sandboxing (seccomp-bpf, capabilities).
 libc = { version = "0.2", optional = true }
 # Real seccomp-bpf filter compilation (NOT just prctl strict mode).
@@ -107,7 +117,7 @@ wgpu = { version = "30.0.0", optional = true }
 
 [features]
 default = ["tls", "real-tls", "real-video"]
-tls = ["ureq/tls"]
+tls = ["ureq/native-tls"]
 sandbox = ["dep:libc", "dep:seccompiler"]
 # Real cryptographic TLS validation (rustls + webpki-roots).
 # Disable with --no-default-features to use the stub verifier.

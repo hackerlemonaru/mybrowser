@@ -11,6 +11,10 @@ winit = "0.30"
 [dependencies.profile-manager]
 path = "../profile-manager"
 
+[dependencies.engine]
+path = "../engine"
+package = "falco"
+
 [lib]
 path = "src/lib.rs"
 

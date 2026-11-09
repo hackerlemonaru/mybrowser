@@ -19,17 +19,19 @@ pub struct ScreenFingerprint {
 }
 
 impl ScreenFingerprint {
-    pub fn generate(_device: &crate::fingerprint::DeviceProfile, rng: &mut SimpleRng) -> Self {
-        // In production, use device profile values.
+    pub fn generate(device: &crate::fingerprint::DeviceProfile, rng: &mut SimpleRng) -> Self {
+        // Use device profile values for internal consistency.
+        let is_mobile = device.platform.contains("Android") || device.platform.contains("iPhone");
+
         Self {
-            width: 1920,
-            height: 1080,
-            color_depth: 24,
-            pixel_depth: 24,
-            device_pixel_ratio: 1.0,
-            hardware_concurrency: 6,
-            device_memory: 8.0,
-            touch_support: false,
+            width: device.screen_width,
+            height: device.screen_height,
+            color_depth: device.color_depth,
+            pixel_depth: device.color_depth,
+            device_pixel_ratio: if is_mobile { 3.0 } else { 1.0 },
+            hardware_concurrency: device.hardware_concurrency,
+            device_memory: device.device_memory,
+            touch_support: is_mobile,
         }
     }
 }
@@ -39,15 +41,6 @@ impl Default for ScreenFingerprint {
         let mut rng = SimpleRng { state: 0 };
         Self::generate(&crate::fingerprint::DEVICE_PROFILES[0], &mut rng)
     }
-}
-
-/// Simple string hash for fingerprint consistency.
-pub(crate) fn simple_hash(input: &str) -> String {
-    use std::collections::hash_map::DefaultHasher;
-    use std::hash::{Hash, Hasher};
-    let mut hasher = DefaultHasher::new();
-    input.hash(&mut hasher);
-    format!("{:016x}", hasher.finish())
 }
 
 #[cfg(test)]

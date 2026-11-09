@@ -6,7 +6,8 @@ edition = "2021"
 [dependencies]
 profile-manager = { path = "../profile-manager" }
 storage = { path = "../storage" }
-engine = { path = "../engine" }
+engine = { path = "../engine", package = "falco", features = ["tls", "real-tls"] }
+ureq = { version = "2.10", default-features = false, features = ["gzip", "brotli", "socks-proxy", "native-tls"] }
 extensions = { path = "../extensions" }
 gui = { path = "../gui" }
 serde = { version = "1", features = ["derive"] }
@@ -14,6 +15,15 @@ serde_json = "1"
 chrono = "0.4"
 dirs = "5"
 anyhow = "1.0"
+# GUI shell for the browser window (egui immediate-mode + winit + glow OpenGL).
+egui = "0.29"
+egui-winit = "0.29"
+egui_glow = { version = "0.29", features = ["winit"] }
+winit = "0.30"
+glow = "0.14"
+# GLX/OpenGL function loading on Linux via raw-window-handle + libloading.
+raw-window-handle = "0.6"
+libloading = "0.8"
 
 [[bin]]
 name = "mybrowser"

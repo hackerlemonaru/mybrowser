@@ -108,6 +108,24 @@ pub mod multiprocess;
 // Harness for running W3C/WHATWG WPT test suite against Falco.
 pub mod wpt_runner;
 
+// === Tab Management ===
+// Tab groups, pinning, mute, freeze, search, vertical tabs, restore closed tabs.
+pub mod fingerprint;
+pub mod tab_management;
+
+// === Dummy System Profile ===
+// Fake GPU, CPU, screen, and system info for anti-fingerprinting.
+pub mod dummy_profile;
+
+// === Location Profile ===
+// Geolocation, timezone, locale, currency — all consistent per profile.
+pub mod location;
+
+// === Custom Domain System ===
+// 118 non-registrable TLDs, per-profile custom domain → serving URL
+// registry, HF-backed resolution with rate limiting and safety checks.
+pub mod custom_domain;
+
 /// Global storage for standalone SVG content.
 static mut STANDALONE_SVG: Option<String> = None;
 

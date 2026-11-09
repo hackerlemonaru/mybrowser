@@ -23,19 +23,27 @@ pub struct WebGLFingerprint {
 }
 
 impl WebGLFingerprint {
-    pub fn generate(_device: &crate::fingerprint::DeviceProfile, rng: &mut SimpleRng) -> Self {
-        // In production, this uses the device profile from DEVICE_PROFILES.
-        // For now, generate consistent values.
-        let vendor = "NVIDIA Corporation".to_string();
-        let renderer = "NVIDIA GeForce RTX 3060".to_string();
+    pub fn generate(device: &crate::fingerprint::DeviceProfile, rng: &mut SimpleRng) -> Self {
+        // Use device profile values for internal consistency.
+        let vendor = device.webgl_vendor.to_string();
+        let renderer = device.webgl_renderer.to_string();
+
+        // Determine WebGL version based on platform.
+        let (version, shading_language) = if device.platform.contains("Mac") || device.platform.contains("iOS") {
+            ("WebGL 2.0 (OpenGL ES 3.0 Chromium)".to_string(),
+             "OpenGL ES GLSL ES 3.00 (Chromium)".to_string())
+        } else {
+            ("WebGL 1.0 (OpenGL ES 2.0 Chromium)".to_string(),
+             "OpenGL ES GLSL ES 1.00 (Chromium)".to_string())
+        };
 
         Self {
             vendor: vendor.clone(),
             renderer: renderer.clone(),
             unmasked_vendor: vendor,
             unmasked_renderer: renderer,
-            version: "WebGL 1.0 (OpenGL ES 2.0 Chromium)".to_string(),
-            shading_language_version: "OpenGL ES GLSL ES 1.00 (Chromium)".to_string(),
+            version,
+            shading_language_version: shading_language,
             max_texture_size: 16384,
             max_viewport_dims: [16384, 16384],
             extensions: vec![
@@ -67,10 +75,12 @@ mod tests {
     use super::*;
 
     #[test]
-    def webgl_fingerprint_has_expected_strings() {
+    fn webgl_fingerprint_has_expected_strings() {
         let mut rng = SimpleRng { state: 0 };
         let fp = WebGLFingerprint::generate(&crate::fingerprint::DEVICE_PROFILES[0], &mut rng);
         assert!(!fp.renderer.is_empty());
         assert!(!fp.vendor.is_empty());
+        assert_eq!(fp.unmasked_vendor, fp.vendor);
+        assert_eq!(fp.unmasked_renderer, fp.renderer);
     }
 }

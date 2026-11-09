@@ -12,6 +12,7 @@ pub mod local_storage;
 pub mod indexed_db;
 pub mod history;
 pub mod bookmarks;
+pub mod download;
 
 use serde::{Deserialize, Serialize};
 use std::fs;
@@ -24,6 +25,7 @@ pub enum StorageKind {
     IndexedDB,
     History,
     Bookmarks,
+    Download,
 }
 
 /// Ensure a profile's storage directory exists for a given kind.
@@ -72,6 +74,7 @@ impl StorageKind {
             StorageKind::IndexedDB => "indexeddb",
             StorageKind::History => "history",
             StorageKind::Bookmarks => "bookmarks",
+            StorageKind::Download => "downloads",
         }
     }
 }
