@@ -41,6 +41,11 @@ ttf-parser = "0.25"
 anyhow = "1.0"
 # JSON serialization for profile-aware cookie/cache persistence.
 serde = { version = "1", features = ["derive"] }
+# Direct Vulkan GPU access (NOT WebGPU/wgpu) — same as game engines.
+ash = "0.38"
+ash-window = "0.13"
+raw-window-handle = "0.6"
+winit = "0.30"
 # Live window + input — pure Rust, no system deps.
 minifb = "0.27"
 # Image decoding — PNG, JPEG, GIF, BMP, WebP, AVIF, ICO, TIFF, TGA, DDS (pure Rust).

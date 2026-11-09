@@ -80,6 +80,9 @@ pub mod tjs_ext;
 pub mod security;
 pub mod web_runtime;
 
+// === Direct GPU rendering (Vulkan via ash — NOT WebGPU/wgpu) ===
+pub mod gpu;
+
 // === WebAssembly runtime — full from-scratch implementation ===
 // Parser, validator, stack-based interpreter, linear memory, function tables,
 // globals, and the complete WebAssembly.* JS API.

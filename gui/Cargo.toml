@@ -1,0 +1,19 @@
+[package]
+name = "gui"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+egui = "0.29"
+egui-winit = "0.29"
+winit = "0.30"
+
+[dependencies.profile-manager]
+path = "../profile-manager"
+
+[lib]
+path = "src/lib.rs"
+
+[[bin]]
+name = "profile-switcher"
+path = "src/main.rs"
