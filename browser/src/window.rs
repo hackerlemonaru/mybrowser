@@ -103,6 +103,7 @@ pub struct BrowserWindow {
     show_bookmarks_manager: bool,
     address_bar: String,
     omnibox_focused: bool,
+    address_focus_requested: bool,
     show_menu: bool,
     menu_hovered: bool,
     theme: Theme,
@@ -158,6 +159,7 @@ impl BrowserWindow {
             show_bookmarks_manager: false,
             address_bar: String::new(),
             omnibox_focused: false,
+            address_focus_requested: false,
             show_menu: false,
             menu_hovered: false,
             theme: Theme::Light,
@@ -463,6 +465,10 @@ impl BrowserWindow {
                                         .font(egui::TextStyle::Body)
                                         .frame(false),
                                 );
+                                if self.address_focus_requested {
+                                    response.request_focus();
+                                    self.address_focus_requested = false;
+                                }
                                 self.omnibox_focused = response.has_focus();
                                 if response.has_focus() && ui.input(|i| i.key_pressed(Key::Enter)) {
                                     let value = self.address_bar.trim().to_string();
@@ -598,43 +604,44 @@ impl BrowserWindow {
 
     /// Render the active tab's page to an egui texture via the Falco engine.
     fn render_page_to_texture(&mut self, ctx: &egui::Context, size: Vec2) {
-        let tab = match self.tab_manager.active_tab().and_then(|id| self.tab_manager.get_tab(id)) {
-            Some(t) => t,
+        let (tab_id, url) = match self.tab_manager.active_tab() {
+            Some(id) => match self.tab_manager.get_tab(id) {
+                Some(tab) => (id, tab.url.clone()),
+                None => return,
+            },
             None => return,
         };
 
         // An empty tab is a real empty state, not a request to the network.
-        if tab.url == "about:blank" || tab.url.is_empty() {
+        if url == "about:blank" || url.is_empty() {
             self.viewport.texture = None;
             return;
         }
 
-        // Fetch HTML for the active URL through the existing profile-aware engine network layer.
-        let html = match fetch(&tab.url, Some(&self.profile_id)) {
+        // Fetch HTML for the active URL through the existing profile-aware network layer.
+        let html = match fetch(&url, Some(&self.profile_id)) {
             Ok(h) => h,
             Err(_) => {
+                let safe_url = escape_html(&url);
                 let error_html = format!(
                     r#"<html><body style="font-family:sans-serif;padding:40px;color:#333;">
                     <h2>Unable to load page</h2>
                     <p>MyBrowser could not load <b>{}</b>.</p>
                     <p>Please check the address and try again.</p>
                     </body></html>"#,
-                    tab.url
+                    safe_url
                 );
                 self.upload_rendered_page(ctx, &error_html, size);
                 return;
             }
         };
 
-        if let Some(active_id) = self.tab_manager.active_tab() {
-            if let Some(active_tab) = self.tab_manager.get_tab_mut(active_id) {
-                active_tab.title = extract_page_title(&html).unwrap_or_else(|| extract_domain(&active_tab.url));
-                active_tab.state = TabState::Active;
-                active_tab.load_progress = 1.0;
-            }
+        if let Some(active_tab) = self.tab_manager.get_tab_mut(tab_id) {
+            active_tab.title = extract_page_title(&html).unwrap_or_else(|| extract_domain(&url));
+            active_tab.state = TabState::Active;
+            active_tab.load_progress = 1.0;
         }
 
-        let css = "";
         let opts = engine::RenderOptions {
             width: size.x.max(1.0) as u32,
             height: size.y.max(1.0) as u32,
@@ -645,17 +652,16 @@ impl BrowserWindow {
             animation_time_ms: 0,
         };
 
-        match engine::render_to_buffer(&html, css, opts) {
-            Ok(buffer) => {
-                self.upload_pixels(ctx, &buffer);
-            }
+        match engine::render_to_buffer(&html, "", opts) {
+            Ok(buffer) => self.upload_pixels(ctx, &buffer),
             Err(_) => {
+                let safe_url = escape_html(&url);
                 let error_html = format!(
                     r#"<html><body style="font-family:sans-serif;padding:40px;color:#333;">
                     <h2>Render error</h2>
                     <p>Could not render <b>{}</b>.</p>
                     </body></html>"#,
-                    tab.url
+                    safe_url
                 );
                 self.upload_rendered_page(ctx, &error_html, size);
             }
@@ -721,7 +727,7 @@ impl BrowserWindow {
         if keys.0 { self.open_new_tab(); }
         if keys.1 { self.close_active_tab(); }
         if keys.2 { self.viewport.texture = None; self.viewport.dirty = true; }
-        if keys.3 { self.address_bar = self.active_url(); self.omnibox_focused = true; }
+        if keys.3 { self.address_bar = self.active_url(); self.address_focus_requested = true; }
         if keys.4 { self.show_history = true; }
         if keys.5 { self.show_downloads = true; }
         if keys.6 { self.restore_closed_tab(); }
@@ -812,8 +818,16 @@ impl BrowserWindow {
     }
 
     fn close_tab(&mut self, id: TabId) {
+        let active_before_close = self.tab_manager.active_tab();
         self.navigation.remove(&id);
         self.tab_manager.close_tab(id);
+
+        if let Some(active_id) = active_before_close {
+            if active_id != id && self.tab_manager.get_tab(active_id).is_some() {
+                self.tab_manager.switch_to_tab(active_id);
+            }
+        }
+
         if self.tab_manager.active_tab().is_none() {
             self.open_new_tab();
         } else {
