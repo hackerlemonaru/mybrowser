@@ -1,7 +1,8 @@
 # MyBrowser — From-Scratch Rust Browser with Chrome-Like Profiles
 
 A web browser built in Rust **from scratch** (no Chromium, no WebKit, no Tauri
-wrapper), with a Chrome-style profile system for workload isolation.
+wrapper), with a Chrome-style profile system for workload isolation, enterprise-grade
+security, lightweight memory usage, and smooth 60fps rendering.
 
 ## Architecture
 
@@ -11,6 +12,9 @@ mybrowser/ (workspace)
 │   ├── net/         HTTP/TLS, cookies, cache, proxy (per-profile)
 │   ├── gpu/         Direct Vulkan renderer (ash — NOT WebGPU/wgpu)
 │   ├── fingerprint/ Canvas, WebGL, Audio, Fonts, Screen spoofing (per-profile)
+│   ├── security/    Site Isolation, CSP, Sandbox, Permissions
+│   ├── memory/      Arena allocators, bounded caches (no leaks)
+│   ├── performance/ Compositor thread, frame budgeting, damage tracking
 │   └── window/      Interactive browser window (address bar, history, forms)
 ├── profile-manager/ Chrome-like profile manager (isolated data dirs per profile)
 ├── storage/         Per-profile localStorage, IndexedDB, history, bookmarks
@@ -55,14 +59,19 @@ Switching profiles swaps the active cookie jar, HTTP cache, localStorage,
 IndexedDB, history, bookmarks, and extensions — zero session leakage between
 Work, Personal, Banking, etc.
 
+**Site Isolation:** Each `(profile, origin)` pair gets its own isolation context.
+Work's `example.com` is completely separate from Personal's `example.com` —
+never share cookies, storage, or cache.
+
 ## Chrome Extension Support (Manifest V3)
 
-MyBrowser supports Chrome extensions with a **security-first sandbox**:
+MyBrowser supports Chrome extensions with a **security-first sandbox** based on
+the FIST BUMP security model:
 
 | Security Feature | Implementation |
 |-----------------|---------------|
 | Process isolation | Extension host runs in separate process per profile |
-| Content script isolation | Content scripts run in extension process, NOT renderer (FIST BUMP model) |
+| Content script isolation | Content scripts run in extension process, NOT renderer |
 | DOM Proxy | Content scripts access page DOM through proxy, never direct references |
 | Message validation | sender.id must match extension.id; no cross-extension messaging |
 | No eval() | Dynamic code execution banned |
@@ -78,8 +87,8 @@ Extensions are installed from .crx files or unpacked directories.
 Each profile can route traffic through its own proxy:
 
 ```
-Profile "Work"    → SOCKS5 proxy at 10.0.0.5:1080 (direct IP)
-Profile "Personal" → HTTP proxy at proxy.example.com:3128 (different IP)
+Profile "Work"    → SOCKS5 proxy at 10.0.0.5:1080
+Profile "Personal" → HTTP proxy at proxy.example.com:3128
 Profile "Banking"  → Direct connection (no proxy)
 ```
 
@@ -89,7 +98,7 @@ Bypass list for local addresses.
 ## Fingerprint Spoofing (Anti-Detection)
 
 Each profile gets a **consistent, internally-consistent fingerprint** that stays
-the same across sessions (randomization per page load is a detection signal):
+the same across sessions:
 
 | Vector | Spoofed |
 |--------|---------|
@@ -102,25 +111,38 @@ the same across sessions (randomization per page load is a detection signal):
 | Hardware concurrency + device memory | ✅ |
 | Timezone + locale | ✅ |
 | Platform / OS | ✅ |
-| WebRTC (IP leak prevention) | ✅ |
 
-Values are selected from real device profiles (Windows 11 + RTX 3060, macOS + M2,
-Linux + Intel, etc.) and kept internally consistent — a Windows profile reports
-matching User-Agent, WebGL, canvas, fonts, and screen values.
+Values are selected from real device profiles and kept internally consistent.
 
 ## Dummy System Profile (Privacy at Peak)
 
 In Settings → Privacy Peak, enable **Dummy System Profile** to report completely
-fake system information:
+fake system information: OS, CPU, GPU, screen, timezone, locale — websites see
+a completely different machine. Combine with per-profile proxy for IP isolation.
 
-- Fake OS, OS version, CPU, CPU cores, memory
-- Fake GPU, GPU vendor (different from real hardware)
-- Fake screen resolution, layout, pixel ratio
-- Fake timezone, locale, touch support
-- Fake WebGL vendor/renderer
+## Security Architecture
 
-Websites see a completely different machine than your real one. Combine with
-per-profile proxy for IP isolation matching the dummy location.
+**Defense in depth** — multiple independent layers:
+
+| Layer | Protection |
+|-------|-----------|
+| Site Isolation | Each (profile, origin) in separate context; cross-origin access denied |
+| OS Sandbox | Renderers blocked from filesystem, network, exec |
+| CSP | Restricts scripts, styles, images, connections per page |
+| Extension Sandbox | FIST BUMP model; no eval, no nativeMessaging, sender validation |
+| Memory Safety | Arena allocators per tab; O(1) free on close; bounded caches |
+| Performance | Compositor thread; damage tracking; 16.67ms frame budget |
+
+See `SECURITY.md` for full details.
+
+## Performance
+
+- **Compositor thread** — GPU rendering off main thread; 60fps even when JS blocks
+- **Damage tracking** — only repaint changed regions; idle pages cost nothing
+- **Frame budgeting** — 16.67ms target; metrics tracked per frame
+- **Compositor-only animations** — transform, opacity on GPU thread
+- **Lazy loading** — content-visibility: auto, loading="lazy" for images
+- **Arena allocators** — per-tab memory, freed O(1) on close; no leaks
 
 ## Build & Run
 
@@ -131,7 +153,7 @@ cd mybrowser
 cargo build --release
 
 # Show the Chrome-like profile switcher GUI
-cargo run -p profile-switcher -- --gui
+cargo run -p profile-switcher
 
 # Or launch directly with a profile ID
 cargo run -p browser -- <profile_id> https://example.com
@@ -152,7 +174,6 @@ cargo run -p browser -- <personal-id> https://personal-site.com
 |---------|-------------|
 | `list` | List all profiles, show which is active |
 | `create <name>` | Create a new isolated regular profile |
-| `create --guest` | Create a temporary guest profile |
 | `switch <id\|name>` | Switch the active profile |
 | `delete <id>` | Delete a profile and wipe its entire data directory |
 | `active` | Show the currently active profile |
@@ -167,15 +188,10 @@ cargo run -p browser -- <personal-id> https://personal-site.com
 - **"Guest"** → Launch a temporary guest profile (wiped on exit)
 - **"Settings"** → Configure dummy profile, extensions, proxy
 
-## Security Model
-
-1. **Profile isolation**: Each profile's data is in a separate directory — no shared cookies, cache, or storage
-2. **Extension sandbox**: Content scripts isolated from renderer process; no eval, no nativeMessaging, message sender validation
-3. **GPU isolation**: Each profile gets its own Vulkan context (direct Vulkan via ash)
-4. **Network isolation**: Per-profile proxy routing; DNS through proxy (SOCKS5h)
-5. **Fingerprint consistency**: Per-profile fingerprint locked — same values across sessions
-6. **No system access**: Extensions cannot access the host filesystem or make native calls
-
 ## Repository
 
 https://github.com/hackerlemonaru/mybrowser
+
+## License
+
+MIT

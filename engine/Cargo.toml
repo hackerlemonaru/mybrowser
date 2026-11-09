@@ -47,10 +47,12 @@ ash = "0.38"
 ash-window = "0.13"
 raw-window-handle = "0.6"
 winit = "0.30"
-# OnceCell for global proxy manager.
+# OnceCell for global managers.
 once_cell = "1"
 # ureq proxy support.
 ureq = { version = "2.10", default-features = false, features = ["gzip", "brotli", "proxy"] }
+# Arena allocator for per-page memory (no leaks, O(1) free).
+bumpalo = "3.18"
 # Live window + input — pure Rust, no system deps.
 minifb = "0.27"
 # Image decoding — PNG, JPEG, GIF, BMP, WebP, AVIF, ICO, TIFF, TGA, DDS (pure Rust).
