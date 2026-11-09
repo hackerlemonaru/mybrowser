@@ -12,6 +12,7 @@
 
 pub mod cache;
 pub mod cookies;
+pub mod proxy;
 pub mod redirect;
 pub mod websocket;
 
@@ -96,6 +97,12 @@ pub fn fetch_bytes_with_options(
         0
     };
 
+    // Get per-profile proxy config.
+    let proxy_config = profile_id.and_then(|pid| proxy::ProxyManager::get_config(pid));
+    let use_proxy = proxy_config.as_ref()
+        .map(|c| !proxy::ProxyManager::should_bypass(pid.unwrap(), url))
+        .unwrap_or(false);
+
     loop {
         // Check cache (profile-aware).
         if opts.use_cache {
@@ -120,6 +127,13 @@ pub fn fetch_bytes_with_options(
             .set("Sec-Fetch-Mode", "navigate")
             .set("Sec-Fetch-Site", "none")
             .set("Sec-Fetch-User", "?1");
+
+        // Apply per-profile proxy (ureq supports proxy via environment or URL).
+        if use_proxy {
+            if let Some(proxy_url) = &proxy_config.and_then(|c| proxy::ProxyManager::proxy_url(pid.unwrap())) {
+                req = req.proxy(ureq::Proxy::new(proxy_url)?);
+            }
+        }
 
         if let Some(ref referer) = opts.referer {
             req = req.set("Referer", referer);

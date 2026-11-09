@@ -8,8 +8,15 @@ wrapper), with a Chrome-style profile system for workload isolation.
 ```
 mybrowser/ (workspace)
 ├── engine/          Falco — from-scratch browser engine (HTML/CSS/JS/layout/paint)
+│   ├── net/         HTTP/TLS, cookies, cache, proxy (per-profile)
+│   ├── gpu/         Direct Vulkan renderer (ash — NOT WebGPU/wgpu)
+│   ├── fingerprint/ Canvas, WebGL, Audio, Fonts, Screen spoofing (per-profile)
+│   └── window/      Interactive browser window (address bar, history, forms)
 ├── profile-manager/ Chrome-like profile manager (isolated data dirs per profile)
-└── browser/         The app — ties engine + profiles together
+├── storage/         Per-profile localStorage, IndexedDB, history, bookmarks
+├── extensions/      Chrome Manifest V3 extension system (sandboxed, per-profile)
+├── gui/             Chrome-like profile switcher GUI (egui + winit)
+└── browser/         The app — ties engine + profiles + extensions + proxy + fingerprint together
 ```
 
 ## Why "from scratch"?
@@ -24,7 +31,7 @@ every module — HTML tokenizer, CSS parser, DOM, layout, paint, JavaScript VM,
 WebAssembly interpreter, PNG encoder — is written from scratch in Rust. No
 imported engine, no WebView, no Chromium.
 
-## Profile System (Chrome-like)
+## Profile System (Chrome-like + Guest Mode)
 
 Each profile gets its own isolated data directory:
 
@@ -34,68 +41,140 @@ Each profile gets its own isolated data directory:
 ├── cache/            → HTTP cache (per-profile)
 ├── history/          → browsing history
 ├── bookmarks/        → bookmarks
-├── extensions/       → extension storage
 ├── localstorage/     → localStorage per profile
+├── indexeddb/        → IndexedDB per profile
+├── extensions/       → extension storage per profile
 └── sessions/         → session data
 ```
 
-Switching profiles swaps the active cookie jar, HTTP cache, and storage — zero
-session leakage between Work, Personal, Banking, etc.
+**Profile types:**
+- **Regular** — persistent profile with name, avatar, theme color
+- **Guest** — temporary profile, all data wiped when browser exits
+
+Switching profiles swaps the active cookie jar, HTTP cache, localStorage,
+IndexedDB, history, bookmarks, and extensions — zero session leakage between
+Work, Personal, Banking, etc.
+
+## Chrome Extension Support (Manifest V3)
+
+MyBrowser supports Chrome extensions with a **security-first sandbox**:
+
+| Security Feature | Implementation |
+|-----------------|---------------|
+| Process isolation | Extension host runs in separate process per profile |
+| Content script isolation | Content scripts run in extension process, NOT renderer (FIST BUMP model) |
+| DOM Proxy | Content scripts access page DOM through proxy, never direct references |
+| Message validation | sender.id must match extension.id; no cross-extension messaging |
+| No eval() | Dynamic code execution banned |
+| No nativeMessaging | No host system access (banned) |
+| Strict CSP | 'unsafe-eval' and 'unsafe-inline' banned |
+| Allowlist actions | Only allowlisted privileged actions permitted |
+| Per-profile storage | Extension data isolated per profile on disk |
+
+Extensions are installed from .crx files or unpacked directories.
+
+## Per-Profile Proxy
+
+Each profile can route traffic through its own proxy:
+
+```
+Profile "Work"    → SOCKS5 proxy at 10.0.0.5:1080 (direct IP)
+Profile "Personal" → HTTP proxy at proxy.example.com:3128 (different IP)
+Profile "Banking"  → Direct connection (no proxy)
+```
+
+Supports SOCKS5, SOCKS5h (remote DNS), and HTTP proxies with authentication.
+Bypass list for local addresses.
+
+## Fingerprint Spoofing (Anti-Detection)
+
+Each profile gets a **consistent, internally-consistent fingerprint** that stays
+the same across sessions (randomization per page load is a detection signal):
+
+| Vector | Spoofed |
+|--------|---------|
+| User-Agent + Client Hints | ✅ |
+| WebGL vendor/renderer | ✅ |
+| Canvas (noise injection at paint level) | ✅ |
+| AudioContext | ✅ |
+| Fonts | ✅ |
+| Screen resolution + color depth | ✅ |
+| Hardware concurrency + device memory | ✅ |
+| Timezone + locale | ✅ |
+| Platform / OS | ✅ |
+| WebRTC (IP leak prevention) | ✅ |
+
+Values are selected from real device profiles (Windows 11 + RTX 3060, macOS + M2,
+Linux + Intel, etc.) and kept internally consistent — a Windows profile reports
+matching User-Agent, WebGL, canvas, fonts, and screen values.
+
+## Dummy System Profile (Privacy at Peak)
+
+In Settings → Privacy Peak, enable **Dummy System Profile** to report completely
+fake system information:
+
+- Fake OS, OS version, CPU, CPU cores, memory
+- Fake GPU, GPU vendor (different from real hardware)
+- Fake screen resolution, layout, pixel ratio
+- Fake timezone, locale, touch support
+- Fake WebGL vendor/renderer
+
+Websites see a completely different machine than your real one. Combine with
+per-profile proxy for IP isolation matching the dummy location.
 
 ## Build & Run
 
-Requires Rust (install via `rustup`).
+Requires Rust (install via `rustup`) and Vulkan SDK (for GPU rendering).
 
 ```bash
 cd mybrowser
 cargo build --release
+
+# Show the Chrome-like profile switcher GUI
+cargo run -p profile-switcher -- --gui
+
+# Or launch directly with a profile ID
+cargo run -p browser -- <profile_id> https://example.com
 
 # Create profiles for different workloads
 cargo run -p browser -- create Work
 cargo run -p browser -- create Personal
 cargo run -p browser -- create Banking
 
-# Switch into a workload
-cargo run -p browser -- switch Work
-
-# Browse a URL inside a profile's isolated context
-cargo run -p browser -- browse https://example.com Work
-
-# See the active profile and its isolated paths
-cargo run -p browser -- active
-cargo run -p browser -- config Work
+# Browse in an isolated context
+cargo run -p browser -- <work-id> https://work-site.com
+cargo run -p browser -- <personal-id> https://personal-site.com
 ```
 
-## CLI Commands
+## CLI Commands (browser crate)
 
 | Command | What it does |
 |---------|-------------|
 | `list` | List all profiles, show which is active |
-| `create <name>` | Create a new isolated profile with its own data dir |
+| `create <name>` | Create a new isolated regular profile |
+| `create --guest` | Create a temporary guest profile |
 | `switch <id\|name>` | Switch the active profile |
 | `delete <id>` | Delete a profile and wipe its entire data directory |
 | `active` | Show the currently active profile |
 | `browse <url> <profile>` | Fetch a URL using that profile's cookies/cache |
 | `config <id\|name>` | Show all isolated paths for a profile |
+| `--gui` | Show the Chrome-like profile switcher GUI |
 
-## What's Built
+## GUI Commands (profile-switcher crate)
 
-- ✅ ProfileManager: create/list/switch/delete profiles with isolated data dirs
-- ✅ Per-profile cookie jar (persisted to disk per profile)
-- ✅ Per-profile HTTP cache (persisted to disk per profile)
-- ✅ From-scratch engine: HTML parser, CSS cascade, layout (flex/grid/table), paint
-- ✅ Custom JavaScript VM (TJS) with bytecode interpreter + JIT
-- ✅ WebAssembly interpreter
-- ✅ 34+ Web Platform APIs
-- ✅ Interactive window mode (scroll, click, forms, navigation, address bar)
+- Click a profile card → Launch browser with that profile
+- **"Add New"** → Create and launch a new regular profile
+- **"Guest"** → Launch a temporary guest profile (wiped on exit)
+- **"Settings"** → Configure dummy profile, extensions, proxy
 
-## What's Next
+## Security Model
 
-- GUI profile switcher in the browser window (not just CLI)
-- Per-profile localStorage, IndexedDB, history, bookmarks persistence
-- Per-profile extensions storage
-- Per-profile proxy / exit IP (network-layer isolation beyond storage)
-- Per-profile fingerprint spoofing
+1. **Profile isolation**: Each profile's data is in a separate directory — no shared cookies, cache, or storage
+2. **Extension sandbox**: Content scripts isolated from renderer process; no eval, no nativeMessaging, message sender validation
+3. **GPU isolation**: Each profile gets its own Vulkan context (direct Vulkan via ash)
+4. **Network isolation**: Per-profile proxy routing; DNS through proxy (SOCKS5h)
+5. **Fingerprint consistency**: Per-profile fingerprint locked — same values across sessions
+6. **No system access**: Extensions cannot access the host filesystem or make native calls
 
 ## Repository
 

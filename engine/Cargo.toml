@@ -39,6 +39,7 @@ rustybuzz = "0.20"
 ttf-parser = "0.25"
 # Error handling.
 anyhow = "1.0"
+chrono = "0.4"
 # JSON serialization for profile-aware cookie/cache persistence.
 serde = { version = "1", features = ["derive"] }
 # Direct Vulkan GPU access (NOT WebGPU/wgpu) — same as game engines.
@@ -46,6 +47,10 @@ ash = "0.38"
 ash-window = "0.13"
 raw-window-handle = "0.6"
 winit = "0.30"
+# OnceCell for global proxy manager.
+once_cell = "1"
+# ureq proxy support.
+ureq = { version = "2.10", default-features = false, features = ["gzip", "brotli", "proxy"] }
 # Live window + input — pure Rust, no system deps.
 minifb = "0.27"
 # Image decoding — PNG, JPEG, GIF, BMP, WebP, AVIF, ICO, TIFF, TGA, DDS (pure Rust).

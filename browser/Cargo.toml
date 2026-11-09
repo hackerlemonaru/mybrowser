@@ -7,6 +7,7 @@ edition = "2021"
 profile-manager = { path = "../profile-manager" }
 storage = { path = "../storage" }
 engine = { path = "../engine" }
+extensions = { path = "../extensions" }
 gui = { path = "../gui" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
