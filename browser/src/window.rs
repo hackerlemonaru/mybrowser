@@ -10,7 +10,7 @@
 //! Every control connects to real browser functionality.
 
 use anyhow::Result;
-use engine::tab_management::TabManager;
+use engine::tab_management::{TabId, TabManager, TabState};
 use engine::dummy_profile::{DummySystemConfig, set_config};
 use engine::dummy_profile::ui::{DummyProfileSelector, DummyProfileUIAction};
 use engine::location::{set_location, LocationProfile};
@@ -21,6 +21,7 @@ use egui::{
     Align, Align2, Color32, Frame, Layout, Rect, RichText, Rounding, Stroke, Sense, TextEdit,
     TextureHandle, TextureOptions, Vec2, FontId, Key,
 };
+use std::collections::HashMap;
 use std::time::Instant;
 
 /// UI theme.
@@ -67,6 +68,13 @@ impl Theme {
             Theme::Dark => Color32::from_rgb(142, 145, 150),
         }
     }
+
+    fn hover(&self) -> Color32 {
+        match self {
+            Theme::Light => Color32::from_rgb(225, 228, 232),
+            Theme::Dark => Color32::from_rgb(48, 48, 48),
+        }
+    }
     fn border(&self) -> Color32 {
         match self {
             Theme::Light => Color32::from_rgb(218, 220, 224),
@@ -82,13 +90,27 @@ struct Viewport {
     dirty: bool,
 }
 
+/// Per-tab session history. TabManager owns tab lifecycle/order; navigation
+/// history stays in the browser UI layer until the engine exposes session history.
+#[derive(Default)]
+struct NavigationHistory {
+    entries: Vec<String>,
+    index: usize,
+}
+
 /// Browser window state.
 pub struct BrowserWindow {
     profile_id: String,
     data_dir: std::path::PathBuf,
     tab_manager: TabManager,
+    navigation: HashMap<TabId, NavigationHistory>,
+    dragged_tab: Option<TabId>,
+    show_history: bool,
+    show_downloads: bool,
+    show_bookmarks_manager: bool,
     address_bar: String,
     omnibox_focused: bool,
+    address_focus_requested: bool,
     show_menu: bool,
     menu_hovered: bool,
     theme: Theme,
@@ -112,17 +134,23 @@ pub struct BrowserWindow {
 impl BrowserWindow {
     pub fn new(profile_id: &str) -> Result<Self> {
         let mgr = profile_manager::ProfileManager::new()
-        .map_err(|e| anyhow::anyhow!(e.to_string()))?;
+            .map_err(|e| anyhow::anyhow!(e.to_string()))?;
         let profile = mgr
             .resolve(profile_id)
             .ok_or_else(|| anyhow::anyhow!("Profile '{}' not found", profile_id))?;
         let data_dir = profile.data_dir.clone();
 
+        // Start with an empty browser tab. Do not seed the user's browser with example.com.
         let mut tab_manager = TabManager::new();
-        let _initial = tab_manager.open_tab(
-            "https://example.com".to_string(),
+        let first_tab = tab_manager.open_tab(
+            "about:blank".to_string(),
             "New Tab".to_string(),
         );
+        let mut navigation = HashMap::new();
+        navigation.insert(first_tab, NavigationHistory {
+            entries: vec!["about:blank".to_string()],
+            index: 0,
+        });
 
         let dummy_config = engine::dummy_profile::get_config(profile_id);
         let location_config = engine::location::get_location(profile_id);
@@ -131,8 +159,14 @@ impl BrowserWindow {
             profile_id: profile_id.to_string(),
             data_dir,
             tab_manager,
-            address_bar: "https://example.com".to_string(),
+            navigation,
+            dragged_tab: None,
+            show_history: false,
+            show_downloads: false,
+            show_bookmarks_manager: false,
+            address_bar: String::new(),
             omnibox_focused: false,
+            address_focus_requested: false,
             show_menu: false,
             menu_hovered: false,
             theme: Theme::Light,
@@ -158,6 +192,7 @@ impl BrowserWindow {
 
     /// Render the full browser window. Returns true if the window should close.
     pub fn render(&mut self, ctx: &egui::Context) -> bool {
+        self.handle_shortcuts(ctx);
         // ── Tab Strip (first element at top) ──
         egui::TopBottomPanel::top("tab_strip")
             .min_height(42.0)
@@ -175,7 +210,7 @@ impl BrowserWindow {
             });
 
         // ── Bookmarks Bar (only if bookmarks exist and bar is visible) ──
-        if self.bookmarks_bar_visible && self.has_bookmarks() {
+        if self.bookmarks_bar_visible {
             egui::TopBottomPanel::top("bookmarks_bar")
                 .min_height(28.0)
                 .max_height(28.0)
@@ -189,7 +224,7 @@ impl BrowserWindow {
             self.render_menu_popup(ctx);
         }
 
-        // ── Dummy profile side panel ──
+    // ── Dummy profile side panel ──
         if self.show_dummy_panel {
             egui::SidePanel::right("dummy_panel")
                 .default_width(360.0)
@@ -207,6 +242,16 @@ impl BrowserWindow {
                 });
         }
 
+        if self.show_history {
+            self.render_history_popup(ctx);
+        }
+        if self.show_downloads {
+            self.render_downloads_popup(ctx);
+        }
+        if self.show_bookmarks_manager {
+            self.render_bookmarks_manager(ctx);
+        }
+
         // ── Main viewport (fills all remaining space) ──
         egui::CentralPanel::default()
             .frame(Frame::none().fill(self.theme.frame()))
@@ -220,36 +265,30 @@ impl BrowserWindow {
 
     // ── Tab Strip ──
     fn render_tab_strip(&mut self, ui: &mut egui::Ui) {
-        let theme = self.theme;
         Frame::none()
-            .fill(theme.tab_inactive())
-            .inner_margin(2.0)
+            .fill(self.theme.tab_inactive())
+            .inner_margin(egui::vec2(8.0, 3.0))
             .show(ui, |ui| {
                 ui.horizontal(|ui| {
-                    ui.spacing();
+                    let ids = self.tab_manager.tab_order().to_vec();
+                    let tab_width = (ui.available_width() / ids.len().max(1) as f32)
+                        .clamp(150.0, 230.0);
 
-                    // Render tabs (ungrouped, in order).
-                    let tab_ids: Vec<engine::tab_management::TabId> =
-                        self.tab_manager.tab_order().to_vec();
+                    egui::ScrollArea::horizontal()
+                        .id_source("chrome_tab_strip")
+                        .auto_shrink([false, false])
+                        .show(ui, |ui| {
+                            ui.horizontal(|ui| {
+                                for id in ids {
+                                    if let Some(tab) = self.tab_manager.get_tab(id).cloned() {
+                                        self.render_tab_card(ui, &tab, self.theme, tab_width);
+                                    }
+                                }
+                            });
+                        });
 
-                    for tid in tab_ids {
-                        let tab = match self.tab_manager.get_tab(tid) {
-                            Some(t) => t.clone(),
-                            None => continue,
-                        };
-                        self.render_tab_card(ui, &tab, theme);
-                    }
-
-                    // `+` new tab button (Chrome style, at end of tab strip).
-                    if ui
-                        .button(RichText::new("+").strong().color(theme.text()).size(16.0))
-                        .clicked()
-                    {
-                        self.tab_manager.open_tab(
-                            "https://example.com".to_string(),
-                            "New Tab".to_string(),
-                        );
-                        self.viewport.dirty = true;
+                    if browser_icon_button(ui, BrowserIcon::Plus, "New tab", true, self.theme).clicked() {
+                        self.open_new_tab();
                     }
                 });
             });
@@ -261,269 +300,264 @@ impl BrowserWindow {
         ui: &mut egui::Ui,
         tab: &engine::tab_management::Tab,
         theme: Theme,
+        width: f32,
     ) {
-        let is_active = self.tab_manager.active_tab() == Some(tab.id);
+        let active = self.tab_manager.active_tab() == Some(tab.id);
+        let tab_width = if tab.pinned { 48.0 } else { width };
+        let (rect, response) = ui.allocate_exact_size(
+            Vec2::new(tab_width, 34.0),
+            Sense::click_and_drag(),
+        );
 
-        // Tab background: active tab blends with content frame.
-        let fill = if is_active {
+        let fill = if active {
             theme.tab_active()
+        } else if response.hovered() {
+            theme.hover()
         } else {
             theme.tab_inactive()
         };
+        ui.painter().rect_filled(rect, Rounding::same(8.0), fill);
+        if active {
+            ui.painter().rect_stroke(
+                rect,
+                Rounding::same(8.0),
+                Stroke::new(1.0, theme.border()),
+            );
+        }
 
-        let stroke = if is_active {
-            Stroke::new(1.0, theme.border())
+        // Falco currently has no decoded favicon texture bridge to egui.
+        // Show a restrained site glyph instead of a fabricated coloured initial.
+        paint_browser_icon(
+            ui.painter(),
+            Rect::from_center_size(
+                egui::pos2(rect.left() + 17.0, rect.center().y),
+                Vec2::splat(16.0),
+            ),
+            BrowserIcon::Globe,
+            theme.text_muted(),
+        );
+
+        let title = if tab.title.is_empty() {
+            if tab.url == "about:blank" { "New Tab" } else { tab.url.as_str() }
         } else {
-            Stroke::new(1.0, Color32::TRANSPARENT)
+            tab.title.as_str()
         };
 
-        // Chrome tab shape: rounded top corners, squared bottom (blends into content).
-        Frame::none()
-            .fill(fill)
-            .stroke(stroke)
-            .rounding(Rounding {
-                nw: 6.0,
-                ne: 6.0,
-                sw: 0.0,
-                se: 0.0,
-            })
-            .inner_margin(egui::vec2(8.0, 2.0))
-            .show(ui, |ui| {
-                ui.set_min_height(34.0);
-                ui.horizontal(|ui| {
-                    ui.spacing();
+        if !tab.pinned {
+            let text_right = if tab.is_closable() { rect.right() - 32.0 } else { rect.right() - 8.0 };
+            let title_rect = Rect::from_min_max(
+                egui::pos2(rect.left() + 32.0, rect.top()),
+                egui::pos2(text_right, rect.bottom()),
+            );
+            ui.painter().with_clip_rect(title_rect).text(
+                egui::pos2(title_rect.left(), title_rect.center().y),
+                Align2::LEFT_CENTER,
+                truncate_tab_title(title, 34),
+                FontId::proportional(12.5),
+                if active { theme.text() } else { theme.text_muted() },
+            );
+        }
 
-                    // Favicon (colored circle with domain initial).
-                    let domain = extract_domain(&tab.url);
-                    let initial = domain.chars().next().unwrap_or('?');
-                    let fav_color = favicon_color(&domain);
-                    ui.painter().circle_filled(
-                        ui.cursor().center(),
-                        8.0,
-                        fav_color,
-                    );
-                    ui.painter().text(
-                        ui.cursor().center(),
-                        Align2::CENTER_CENTER,
-                        &initial.to_string(),
-                        FontId::proportional(10.0),
-                        Color32::WHITE,
-                    );
-                    ui.allocate_space(Vec2::new(14.0, 0.0));
+        if tab.is_closable() && (active || response.hovered()) {
+            let close_rect = Rect::from_center_size(
+                egui::pos2(rect.right() - 17.0, rect.center().y),
+                Vec2::splat(24.0),
+            );
+            let close = ui.interact(
+                close_rect,
+                egui::Id::new(("chrome_tab_close", tab.id.as_u64())),
+                Sense::click(),
+            );
+            if close.hovered() {
+                ui.painter().circle_filled(close_rect.center(), 11.0, theme.hover());
+            }
+            paint_browser_icon(
+                ui.painter(),
+                Rect::from_center_size(close_rect.center(), Vec2::splat(12.0)),
+                BrowserIcon::Close,
+                theme.text(),
+            );
+            if close.clicked() {
+                self.close_tab(tab.id);
+                return;
+            }
+        }
 
-                    // Tab title.
-                    let title = if tab.title.is_empty() {
-                        "New Tab".to_string()
-                    } else {
-                        tab.title.clone()
-                    };
-                    let display_title = if title.len() > 45 {
-                        format!("{}...", &title[..42])
-                    } else {
-                        title
-                    };
+        if response.clicked() {
+            self.tab_manager.switch_to_tab(tab.id);
+            self.sync_active_address();
+            self.viewport.dirty = true;
+        }
 
-                    let response = ui.selectable_label(
-                        is_active,
-                        RichText::new(&display_title)
-                            .size(12.0)
-                            .color(if is_active {
-                                theme.text()
-                            } else {
-                                theme.text_muted()
-                            }),
-                    );
-                    let is_hovered = response.hovered();
-                    if response.clicked() {
-                        self.tab_manager.switch_to_tab(tab.id);
-                        self.address_bar = tab.url.clone();
-                        self.viewport.dirty = true;
-                    }
-
-                    // Close button on hover (Chrome style).
-                    if is_hovered && !tab.pinned {
-                        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                            if ui.button("✕").clicked() {
-                                self.tab_manager.close_tab(tab.id);
-                                self.viewport.dirty = true;
-                            }
-                        });
-                    }
-                });
-            });
+        if response.drag_started() {
+            self.dragged_tab = Some(tab.id);
+        }
+        if let Some(dragged) = self.dragged_tab {
+            if response.hovered()
+                && dragged != tab.id
+                && ui.input(|i| i.pointer.primary_down())
+            {
+                if let Some(target) = self.tab_manager.tab_order().iter().position(|id| *id == tab.id) {
+                    self.tab_manager.move_tab_to_position(dragged, target);
+                }
+            }
+            if ui.input(|i| i.pointer.any_released()) {
+                self.dragged_tab = None;
+            }
+        }
     }
 
     // ── Navigation Toolbar ──
     fn render_nav_toolbar(&mut self, ui: &mut egui::Ui) {
-        let theme = self.theme;
         Frame::none()
-            .fill(theme.toolbar())
-            .inner_margin(egui::vec2(8.0, 2.0))
+            .fill(self.theme.toolbar())
+            .inner_margin(egui::vec2(10.0, 5.0))
             .show(ui, |ui| {
                 ui.horizontal(|ui| {
-                    ui.spacing();
+                    let (can_back, can_forward) = self.navigation_availability();
 
-                    // Back.
-                    let back_enabled = true; // TODO: wire to session history
-                    if ui.button(RichText::new("◀").size(14.0)).clicked() {
-                        // back navigation
+                    if browser_icon_button(ui, BrowserIcon::Back, "Back", can_back, self.theme).clicked() {
+                        self.navigate_history(-1);
                     }
-
-                    // Forward.
-                    if ui.button(RichText::new("▶").size(14.0)).clicked() {
-                        // forward navigation
+                    if browser_icon_button(ui, BrowserIcon::Forward, "Forward", can_forward, self.theme).clicked() {
+                        self.navigate_history(1);
                     }
-
-                    // Reload / Stop.
-                    if ui.button(RichText::new("⟳").size(14.0)).clicked() {
+                    if browser_icon_button(ui, BrowserIcon::Reload, "Reload", true, self.theme).clicked() {
+                        self.viewport.texture = None;
                         self.viewport.dirty = true;
                     }
 
-                    ui.separator();
+                    ui.add_space(6.0);
+                    let omnibox_width = (ui.available_width() - 42.0).max(180.0);
+                    let active_url = self.active_url();
+                    let security_icon = if active_url.starts_with("https://") {
+                        BrowserIcon::Lock
+                    } else {
+                        BrowserIcon::Globe
+                    };
 
-                    // ── Omnibox ──
-                    // Security icon (left of omnibox).
-                    ui.painter().circle_filled(
-                        ui.cursor().center(),
-                        7.0,
-                        Color32::from_rgb(16, 137, 43), // green secure
-                    );
-                    // Security icon: draw a shield-like shape instead of emoji.
-                        let security_rect = Rect::from_center_size(
-                            ui.cursor().center(),
-                            Vec2::splat(10.0),
-                        );
-                        ui.painter().rect_filled(
-                            security_rect,
-                            Rounding::same(2.0),
-                            Color32::from_rgb(66, 133, 244),
-                        );
-                    ui.allocate_space(Vec2::new(16.0, 0.0));
+                    Frame::none()
+                        .fill(match self.theme {
+                            Theme::Light => Color32::from_rgb(241, 243, 244),
+                            Theme::Dark => Color32::from_rgb(55, 56, 60),
+                        })
+                        .rounding(Rounding::same(18.0))
+                        .stroke(Stroke::new(
+                            if self.omnibox_focused { 1.5 } else { 1.0 },
+                            if self.omnibox_focused {
+                                Color32::from_rgb(26, 115, 232)
+                            } else {
+                                self.theme.border()
+                            },
+                        ))
+                        .inner_margin(egui::vec2(12.0, 2.0))
+                        .show(ui, |ui| {
+                            ui.set_min_width(omnibox_width);
+                            ui.set_max_width(omnibox_width);
+                            ui.horizontal(|ui| {
+                                paint_browser_icon(
+                                    ui.painter(),
+                                    Rect::from_min_size(ui.cursor().min, Vec2::splat(17.0)),
+                                    security_icon,
+                                    self.theme.text_muted(),
+                                );
+                                ui.add_space(8.0);
 
-                    // Omnibox text field.
-                    let omnibox_width = ui.available_width() - 140.0;
-                    ui.set_width(omnibox_width.clamp(200.0, f32::INFINITY));
+                                let field_width = (omnibox_width - 82.0).max(80.0);
+                                let response = ui.add_sized(
+                                    [field_width, 28.0],
+                                    TextEdit::singleline(&mut self.address_bar)
+                                        .desired_width(field_width)
+                                        .hint_text("Search or enter address")
+                                        .font(egui::TextStyle::Body)
+                                        .frame(false),
+                                );
+                                if self.address_focus_requested {
+                                    response.request_focus();
+                                    self.address_focus_requested = false;
+                                }
+                                self.omnibox_focused = response.has_focus();
+                                if response.has_focus() && ui.input(|i| i.key_pressed(Key::Enter)) {
+                                    let value = self.address_bar.trim().to_string();
+                                    if !value.is_empty() {
+                                        self.navigate_to(&value);
+                                    }
+                                }
 
-                    let omnibox_response = ui.text_edit_singleline(&mut self.address_bar);
-                    if omnibox_response.has_focus() {
-                        self.omnibox_focused = true;
+                                let bookmarked = self.is_active_bookmarked();
+                                if browser_icon_button(
+                                    ui,
+                                    BrowserIcon::Star,
+                                    if bookmarked { "Remove bookmark" } else { "Bookmark this tab" },
+                                    !active_url.is_empty() && active_url != "about:blank",
+                                    self.theme,
+                                ).clicked() {
+                                    self.toggle_bookmark();
+                                }
+                            });
+                        });
+
+                    ui.add_space(5.0);
+                    if browser_icon_button(
+                        ui,
+                        BrowserIcon::Menu,
+                        "Customize and control MyBrowser",
+                        true,
+                        self.theme,
+                    ).clicked() {
+                        self.show_menu = !self.show_menu;
                     }
-                    if omnibox_response.lost_focus() {
-                        self.omnibox_focused = false;
-                    }
-
-                    // Focus outline when focused.
-                    if self.omnibox_focused {
-                        let rect = omnibox_response.rect;
-                        ui.painter().rect_stroke(
-                            rect.shrink(-1.0),
-                            Rounding::same(4.0),
-                            Stroke::new(1.5, Color32::from_rgb(66, 133, 244)),
-                        );
-                    }
-
-                    if ui.input(|i| i.key_pressed(Key::Enter)) && !self.address_bar.trim().is_empty() {
-                        let url = self.address_bar.trim().to_string();
-                        if let Some(active_id) = self.tab_manager.active_tab() {
-                            if let Some(tab) = self.tab_manager.get_tab_mut(active_id) {
-                                tab.url = url.clone();
-                                tab.title = "Loading...".to_string();
-                                tab.state = engine::tab_management::TabState::Loading;
-                            }
-                        } else {
-                            self.tab_manager.open_tab(url.clone(), "Loading...".to_string());
-                        }
-                        self.viewport.dirty = true;
-                    }
-
-                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                        // 3-dot menu.
-                        let menu_color = if self.menu_hovered {
-                            Color32::from_rgb(60, 61, 65)
-                        } else {
-                            theme.toolbar()
-                        };
-                        let menu_resp = ui.button("⋮");
-                        if menu_resp.hovered() {
-                            self.menu_hovered = true;
-                        } else {
-                            self.menu_hovered = false;
-                        }
-                        if menu_resp.clicked() {
-                            self.show_menu = !self.show_menu;
-                        }
-
-                        // Profile avatar.
-                        ui.allocate_space(Vec2::new(4.0, 0.0));
-                        let avatar_color = Color32::from_rgb(66, 133, 244);
-                        ui.painter().circle_filled(ui.cursor().center(), 12.0, avatar_color);
-                        ui.painter().text(
-                            ui.cursor().center(),
-                            Align2::CENTER_CENTER,
-                            "A",
-                            FontId::proportional(12.0),
-                            Color32::WHITE,
-                        );
-                        ui.allocate_space(Vec2::new(24.0, 0.0));
-                    });
                 });
             });
     }
 
     // ── Bookmarks Bar ──
     fn render_bookmarks_bar(&mut self, ui: &mut egui::Ui) {
-        let theme = self.theme;
         Frame::none()
-            .fill(theme.tab_inactive())
-            .inner_margin(egui::vec2(6.0, 1.0))
+            .fill(self.theme.tab_inactive())
+            .inner_margin(egui::vec2(10.0, 1.0))
             .show(ui, |ui| {
                 ui.horizontal(|ui| {
-                    ui.spacing();
-
-                    for bookmark in storage::bookmarks::list(&self.data_dir) {
-                        let domain = extract_domain(&bookmark.url);
-                        let initial = domain.chars().next().unwrap_or('?');
-                        let fav_color = favicon_color(&domain);
-
-                        ui.horizontal(|ui| {
-                            ui.set_min_height(22.0);
-                            ui.painter().circle_filled(
-                                ui.cursor().center(),
-                                7.0,
-                                fav_color,
-                            );
-                            ui.painter().text(
-                                ui.cursor().center(),
-                                Align2::CENTER_CENTER,
-                                &initial.to_string(),
-                                FontId::proportional(9.0),
-                                Color32::WHITE,
-                            );
-                            ui.allocate_space(Vec2::new(10.0, 0.0));
-
-                            if ui
-                                .button(
-                                    RichText::new(&bookmark.title)
-                                        .size(11.0)
-                                        .color(theme.text()),
-                                )
-                                .clicked()
-                            {
-                                self.tab_manager.open_tab(
-                                    bookmark.url.clone(),
-                                    bookmark.title.clone(),
-                                );
-                                self.address_bar = bookmark.url.clone();
-                                self.viewport.dirty = true;
-                            }
-                        });
-
-                        ui.spacing();
+                    let entries = storage::bookmarks::list(&self.data_dir);
+                    if entries.is_empty() {
+                        ui.label(
+                            RichText::new("No bookmarks")
+                                .size(11.5)
+                                .color(self.theme.text_muted()),
+                        );
+                    } else {
+                        egui::ScrollArea::horizontal()
+                            .id_source("chrome_bookmarks")
+                            .auto_shrink([false, false])
+                            .show(ui, |ui| {
+                                ui.horizontal(|ui| {
+                                    for bookmark in entries {
+                                        let response = ui.add(
+                                            egui::Button::new(
+                                                RichText::new(truncate_tab_title(&bookmark.title, 26))
+                                                    .size(11.5)
+                                                    .color(self.theme.text()),
+                                            )
+                                            .frame(false)
+                                            .min_size(Vec2::new(28.0, 24.0)),
+                                        );
+                                        if response.clicked() {
+                                            self.navigate_to(&bookmark.url);
+                                        }
+                                    }
+                                });
+                            });
                     }
 
                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                        if ui.button(RichText::new("≡").size(12.0)).clicked() {
-                            // bookmarks folder menu
+                        if browser_icon_button(
+                            ui,
+                            BrowserIcon::Folder,
+                            "Bookmark manager",
+                            true,
+                            self.theme,
+                        ).clicked() {
+                            self.show_bookmarks_manager = true;
                         }
                     });
                 });
@@ -532,84 +566,89 @@ impl BrowserWindow {
 
     // ── Main Viewport ──
     fn render_viewport(&mut self, ui: &mut egui::Ui) {
-        let theme = self.theme;
-        let available = ui.available_size();
+        let available = Vec2::new(
+            ui.available_width().max(1.0),
+            ui.available_height().max(1.0),
+        );
 
-        // Re-render viewport if dirty or size changed.
         if self.viewport.dirty
             || self.viewport.texture.is_none()
-            || (self.viewport.size - available).length() > 4.0
+            || (self.viewport.size - available).length() > 2.0
         {
             self.render_page_to_texture(ui.ctx(), available);
             self.viewport.size = available;
             self.viewport.dirty = false;
         }
 
-        // Show loading state if no texture yet.
         if let Some(texture) = &self.viewport.texture {
-            let img = egui::Image::new(texture).fit_to_original_size(1.0);
-            ui.add(egui::Image::new(texture).fit_to_original_size(1.0));
+            ui.add(egui::Image::new(texture).fit_to_exact_size(available));
         } else {
-            // Empty / new tab page.
-            ui.centered_and_justified(|ui| {
-                ui.vertical_centered(|ui| {
-                    ui.add_space(100.0);
-                    let fav_color = favicon_color("example");
-                    ui.painter().circle_filled(
-                        ui.cursor().center(),
-                        32.0,
-                        fav_color,
-                    );
-                    ui.painter().text(
-                        ui.cursor().center(),
-                        Align2::CENTER_CENTER,
-                        "E",
-                        FontId::proportional(24.0),
-                        Color32::WHITE,
-                    );
-                    ui.add_space(16.0);
-                    ui.label(
-                        RichText::new("New Tab")
-                            .size(20.0)
-                            .strong()
-                            .color(theme.text()),
-                    );
-                    ui.add_space(4.0);
-                    ui.label(
-                        RichText::new("Enter a URL or search query above")
-                            .size(13.0)
-                            .color(theme.text_muted()),
-                    );
+            let active_is_blank = self.tab_manager.active_tab()
+                .and_then(|id| self.tab_manager.get_tab(id))
+                .map(|tab| tab.url == "about:blank")
+                .unwrap_or(true);
+
+            if active_is_blank {
+                ui.centered_and_justified(|ui| {
+                    ui.vertical_centered(|ui| {
+                        ui.label(
+                            RichText::new("MyBrowser")
+                                .size(30.0)
+                                .strong()
+                                .color(self.theme.text()),
+                        );
+                        ui.add_space(8.0);
+                        ui.label(
+                            RichText::new("Search the web or enter a URL above")
+                                .size(13.0)
+                                .color(self.theme.text_muted()),
+                        );
+                    });
                 });
-            });
+            }
         }
     }
 
     /// Render the active tab's page to an egui texture via the Falco engine.
     fn render_page_to_texture(&mut self, ctx: &egui::Context, size: Vec2) {
-        let tab = match self.tab_manager.active_tab().and_then(|id| self.tab_manager.get_tab(id)) {
-            Some(t) => t,
+        let (tab_id, url) = match self.tab_manager.active_tab() {
+            Some(id) => match self.tab_manager.get_tab(id) {
+                Some(tab) => (id, tab.url.clone()),
+                None => return,
+            },
             None => return,
         };
 
-        // Fetch HTML for the tab's URL.
-        let html = match fetch(&tab.url, Some(&self.profile_id)) {
+        // An empty tab is a real empty state, not a request to the network.
+        if url == "about:blank" || url.is_empty() {
+            self.viewport.texture = None;
+            return;
+        }
+
+        // Fetch HTML for the active URL through the existing profile-aware network layer.
+        let html = match fetch(&url, Some(&self.profile_id)) {
             Ok(h) => h,
             Err(_) => {
+                let safe_url = escape_html(&url);
                 let error_html = format!(
                     r#"<html><body style="font-family:sans-serif;padding:40px;color:#333;">
                     <h2>Unable to load page</h2>
                     <p>MyBrowser could not load <b>{}</b>.</p>
                     <p>Please check the address and try again.</p>
                     </body></html>"#,
-                    tab.url
+                    safe_url
                 );
                 self.upload_rendered_page(ctx, &error_html, size);
                 return;
             }
         };
 
-        let css = "";
+        if let Some(active_tab) = self.tab_manager.get_tab_mut(tab_id) {
+            active_tab.title = extract_page_title(&html).unwrap_or_else(|| extract_domain(&url));
+            active_tab.state = TabState::Active;
+            active_tab.load_progress = 1.0;
+        }
+
         let opts = engine::RenderOptions {
             width: size.x.max(1.0) as u32,
             height: size.y.max(1.0) as u32,
@@ -620,17 +659,16 @@ impl BrowserWindow {
             animation_time_ms: 0,
         };
 
-        match engine::render_to_buffer(&html, css, opts) {
-            Ok(buffer) => {
-                self.upload_pixels(ctx, &buffer);
-            }
+        match engine::render_to_buffer(&html, "", opts) {
+            Ok(buffer) => self.upload_pixels(ctx, &buffer),
             Err(_) => {
+                let safe_url = escape_html(&url);
                 let error_html = format!(
                     r#"<html><body style="font-family:sans-serif;padding:40px;color:#333;">
                     <h2>Render error</h2>
                     <p>Could not render <b>{}</b>.</p>
                     </body></html>"#,
-                    tab.url
+                    safe_url
                 );
                 self.upload_rendered_page(ctx, &error_html, size);
             }
@@ -674,133 +712,365 @@ impl BrowserWindow {
         Some(self.profile_id.clone())
     }
 
-    // ── 3-dot menu popup ──
-    fn render_menu_popup(&mut self, ctx: &egui::Context) {
-        let screen_rect = ctx.available_rect();
-        let popup_width = 250.0;
-        let popup_x = screen_rect.right() - popup_width - 10.0;
-        let popup_y = 86.0; // below tab strip + nav toolbar
+    fn handle_shortcuts(&mut self, ctx: &egui::Context) {
+        let keys = ctx.input(|i| {
+            let ctrl = i.modifiers.ctrl || i.modifiers.command;
+            let shift = i.modifiers.shift;
+            (
+                ctrl && i.key_pressed(Key::T),
+                ctrl && i.key_pressed(Key::W),
+                ctrl && i.key_pressed(Key::R),
+                ctrl && i.key_pressed(Key::L),
+                ctrl && i.key_pressed(Key::H),
+                ctrl && i.key_pressed(Key::J),
+                ctrl && shift && i.key_pressed(Key::T),
+                ctrl && shift && i.key_pressed(Key::Tab),
+                ctrl && !shift && i.key_pressed(Key::Tab),
+                i.modifiers.alt && i.key_pressed(Key::ArrowLeft),
+                i.modifiers.alt && i.key_pressed(Key::ArrowRight),
+                i.key_pressed(Key::Escape),
+            )
+        });
+        if keys.0 { self.open_new_tab(); }
+        if keys.1 { self.close_active_tab(); }
+        if keys.2 { self.viewport.texture = None; self.viewport.dirty = true; }
+        if keys.3 { self.address_bar = self.active_url(); self.address_focus_requested = true; }
+        if keys.4 { self.show_history = true; }
+        if keys.5 { self.show_downloads = true; }
+        if keys.6 { self.restore_closed_tab(); }
+        if keys.7 { self.switch_previous_tab(); }
+        if keys.8 { self.switch_next_tab(); }
+        if keys.9 { self.navigate_history(-1); }
+        if keys.10 { self.navigate_history(1); }
+        if keys.11 { self.show_menu = false; }
+    }
 
-        egui::Window::new("Chrome Menu")
-            .title_bar(false)
-            .resizable(false)
-            .collapsible(false)
-            .fixed_pos(egui::pos2(popup_x, popup_y))
-            .min_width(popup_width)
-            .max_width(popup_width)
-            .frame(Frame::none()
-                .fill(self.theme.toolbar())
-                .rounding(Rounding::same(6.0))
-                .stroke(Stroke::new(1.0, self.theme.border())))
-            .show(ctx, |ui| {
-                ui.set_min_width(popup_width);
+    fn open_new_tab(&mut self) {
+        let id = self.tab_manager.open_tab(
+            "about:blank".to_string(),
+            "New Tab".to_string(),
+        );
+        self.navigation.insert(id, NavigationHistory {
+            entries: vec!["about:blank".to_string()],
+            index: 0,
+        });
+        self.address_bar.clear();
+        self.viewport.texture = None;
+        self.viewport.dirty = true;
+    }
 
-                // New tab / window.
-                if ui.button("New tab\tCtrl+T").clicked() {
-                    self.tab_manager.open_tab(
-                        "https://example.com".to_string(),
-                        "New Tab".to_string(),
-                    );
-                    self.address_bar = "https://example.com".to_string();
-                    self.viewport.dirty = true;
-                    self.show_menu = false;
+    fn navigate_to(&mut self, input: &str) {
+        let url = resolve_address(input);
+        let id = match self.tab_manager.active_tab() {
+            Some(id) => id,
+            None => {
+                self.open_new_tab();
+                match self.tab_manager.active_tab() {
+                    Some(id) => id,
+                    None => return,
                 }
-                if ui.button("New window\tCtrl+N").clicked() {
-                    self.show_menu = false;
-                }
+            }
+        };
 
-                ui.separator();
+        let history = self.navigation.entry(id).or_default();
+        if history.entries.is_empty() {
+            history.entries.push("about:blank".to_string());
+            history.index = 0;
+        }
+        if history.entries.get(history.index) != Some(&url) {
+            history.entries.truncate(history.index.saturating_add(1));
+            history.entries.push(url.clone());
+            history.index = history.entries.len() - 1;
+        }
 
-                // History.
-                if ui.button("History\tCtrl+H").clicked() {
-                    self.show_menu = false;
-                }
-                if ui.button("Downloads\tCtrl+J").clicked() {
-                    self.show_menu = false;
-                }
-                if ui.button("Bookmarks").clicked() {
-                    self.show_menu = false;
-                }
+        if let Some(tab) = self.tab_manager.get_tab_mut(id) {
+            tab.url = url.clone();
+            tab.title = "Loading…".to_string();
+            tab.state = TabState::Loading;
+            tab.load_progress = 0.0;
+        }
+        self.address_bar = url.clone();
+        self.viewport.texture = None;
+        self.viewport.dirty = true;
+        let _ = storage::history::add_visit(&self.data_dir, &url, "");
+    }
 
-                ui.separator();
+    fn navigate_history(&mut self, direction: i32) {
+        let Some(id) = self.tab_manager.active_tab() else { return };
+        let Some(history) = self.navigation.get_mut(&id) else { return };
 
-                // Zoom.
-                ui.horizontal(|ui| {
-                    ui.label("Zoom");
-                    if ui.button("−").clicked() {}
-                    ui.label("100%");
-                    if ui.button("+").clicked() {}
+        if direction < 0 && history.index > 0 {
+            history.index -= 1;
+        } else if direction > 0 && history.index + 1 < history.entries.len() {
+            history.index += 1;
+        } else {
+            return;
+        }
+
+        let url = history.entries[history.index].clone();
+        if let Some(tab) = self.tab_manager.get_tab_mut(id) {
+            tab.url = url.clone();
+            tab.title = if url == "about:blank" { "New Tab".to_string() } else { "Loading…".to_string() };
+            tab.state = if url == "about:blank" { TabState::Active } else { TabState::Loading };
+        }
+        self.address_bar = if url == "about:blank" { String::new() } else { url };
+        self.viewport.texture = None;
+        self.viewport.dirty = true;
+    }
+
+    fn navigation_availability(&self) -> (bool, bool) {
+        let Some(id) = self.tab_manager.active_tab() else { return (false, false) };
+        let Some(history) = self.navigation.get(&id) else { return (false, false) };
+        (history.index > 0, history.index + 1 < history.entries.len())
+    }
+
+    fn close_tab(&mut self, id: TabId) {
+        let active_before_close = self.tab_manager.active_tab();
+        self.navigation.remove(&id);
+        self.tab_manager.close_tab(id);
+
+        if let Some(active_id) = active_before_close {
+            if active_id != id && self.tab_manager.get_tab(active_id).is_some() {
+                self.tab_manager.switch_to_tab(active_id);
+            }
+        }
+
+        if self.tab_manager.active_tab().is_none() {
+            self.open_new_tab();
+        } else {
+            self.sync_active_address();
+            self.viewport.texture = None;
+            self.viewport.dirty = true;
+        }
+    }
+
+    fn close_active_tab(&mut self) {
+        if let Some(id) = self.tab_manager.active_tab() {
+            self.close_tab(id);
+        }
+    }
+
+    fn restore_closed_tab(&mut self) {
+        if let Some(id) = self.tab_manager.restore_closed_tab() {
+            if let Some(tab) = self.tab_manager.get_tab(id) {
+                let url = tab.url.clone();
+                self.navigation.insert(id, NavigationHistory {
+                    entries: vec![url],
+                    index: 0,
                 });
+            }
+            self.sync_active_address();
+            self.viewport.texture = None;
+            self.viewport.dirty = true;
+        }
+    }
 
-                ui.separator();
+    fn switch_previous_tab(&mut self) {
+        if self.tab_manager.prev_tab().is_some() {
+            self.sync_active_address();
+            self.viewport.texture = None;
+            self.viewport.dirty = true;
+        }
+    }
 
-                if ui.button("Print...\tCtrl+P").clicked() {
-                    self.show_menu = false;
-                }
-                if ui.button("Find\tCtrl+F").clicked() {
-                    self.show_menu = false;
-                }
+    fn switch_next_tab(&mut self) {
+        if self.tab_manager.next_tab().is_some() {
+            self.sync_active_address();
+            self.viewport.texture = None;
+            self.viewport.dirty = true;
+        }
+    }
 
-                ui.separator();
+    fn sync_active_address(&mut self) {
+        self.address_bar = self.tab_manager.active_tab()
+            .and_then(|id| self.tab_manager.get_tab(id))
+            .map(|tab| if tab.url == "about:blank" { String::new() } else { tab.url.clone() })
+            .unwrap_or_default();
+    }
 
-                // VPN (per profile).
-                egui::CollapsingHeader::new("VPN")
-                    .default_open(false)
-                    .show(ui, |ui| {
-                        ui.label("Per-profile VPN");
-                        ui.checkbox(&mut self.vpn_enabled, "Enable VPN for this profile");
-                        if self.vpn_enabled {
-                            ui.horizontal(|ui| {
-                                ui.label("Provider:");
-                                ui.text_edit_singleline(&mut self.vpn_provider);
-                            });
-                            ui.horizontal(|ui| {
-                                ui.label("Endpoint:");
-                                ui.text_edit_singleline(&mut self.vpn_endpoint);
-                            });
-                            ui.horizontal(|ui| {
-                                if ui.button("Connect").clicked() {
-                                    if let Some(pid) = self.selected_profile_id() {
-                                        ProxyManager::set_vpn(&pid, true, &self.vpn_provider, &self.vpn_endpoint);
-                                        let (_, _, _, connected, msg) =
-                                            ProxyManager::vpn_status(&pid);
-                                        self.vpn_enabled = connected;
-                                        self.vpn_message = msg;
-                                    }
-                                }
-                                if ui.button("Disconnect").clicked() {
-                                    if let Some(pid) = self.selected_profile_id() {
-                                        ProxyManager::set_vpn(&pid, false, "", "");
-                                        self.vpn_enabled = false;
-                                        self.vpn_message = Some("VPN disconnected.".to_string());
-                                    }
-                                }
-                            });
-                            if let Some(msg) = &self.vpn_message {
-                                let color = if msg.contains("connected") {
-                                    Color32::from_rgb(16, 137, 43)
-                                } else {
-                                    Color32::from_rgb(234, 67, 53)
-                                };
-                                ui.colored_label(color, RichText::new(msg).small());
+    fn active_url(&self) -> String {
+        self.tab_manager.active_tab()
+            .and_then(|id| self.tab_manager.get_tab(id))
+            .map(|tab| tab.url.clone())
+            .unwrap_or_default()
+    }
+
+    fn is_active_bookmarked(&self) -> bool {
+        let url = self.active_url();
+        !url.is_empty()
+            && storage::bookmarks::list(&self.data_dir).iter().any(|bookmark| bookmark.url == url)
+    }
+
+    fn toggle_bookmark(&mut self) {
+        let url = self.active_url();
+        if url.is_empty() || url == "about:blank" { return; }
+
+        let existing = storage::bookmarks::list(&self.data_dir)
+            .into_iter()
+            .find(|bookmark| bookmark.url == url);
+        if let Some(bookmark) = existing {
+            let _ = storage::bookmarks::remove(&self.data_dir, &bookmark.id);
+        } else {
+            let title = self.tab_manager.active_tab()
+                .and_then(|id| self.tab_manager.get_tab(id))
+                .map(|tab| tab.title.clone())
+                .unwrap_or_else(|| extract_domain(&url));
+            let _ = storage::bookmarks::add(&self.data_dir, &url, &title, "Bookmarks bar");
+        }
+    }
+
+    fn render_history_popup(&mut self, ctx: &egui::Context) {
+        let mut open = self.show_history;
+        egui::Window::new("History")
+            .open(&mut open)
+            .default_width(440.0)
+            .default_height(420.0)
+            .resizable(true)
+            .show(ctx, |ui| {
+                let entries = storage::history::list(&self.data_dir);
+                if entries.is_empty() {
+                    ui.label("No browsing history yet.");
+                } else {
+                    egui::ScrollArea::vertical().show(ui, |ui| {
+                        for entry in entries.into_iter().take(200) {
+                            let title = if entry.title.is_empty() { &entry.url } else { &entry.title };
+                            if ui.selectable_label(false, format!("{}\n{}", truncate_tab_title(title, 64), entry.url)).clicked() {
+                                let url = entry.url.clone();
+                                self.navigate_to(&url);
                             }
+                            ui.separator();
                         }
                     });
-
-                ui.separator();
-
-                if ui.button("Settings").clicked() {
-                    self.show_menu = false;
-                }
-
-                ui.separator();
-
-                if ui.button("Exit").clicked() {
-                    ctx.send_viewport_cmd(egui::ViewportCommand::Close);
                 }
             });
+        self.show_history = open;
+    }
 
-        // Close menu when clicking outside.
+    fn render_downloads_popup(&mut self, ctx: &egui::Context) {
+        let mut open = self.show_downloads;
+        egui::Window::new("Downloads")
+            .open(&mut open)
+            .default_width(480.0)
+            .default_height(360.0)
+            .resizable(true)
+            .show(ctx, |ui| {
+                let records = storage::download::list(&self.data_dir);
+                if records.is_empty() {
+                    ui.label("No downloads yet.");
+                } else {
+                    egui::ScrollArea::vertical().show(ui, |ui| {
+                        for record in records.iter().rev() {
+                            ui.label(RichText::new(&record.suggested_filename).strong());
+                            ui.label(RichText::new(format!("{} bytes · {:?}", record.downloaded_bytes, record.state))
+                                .small().color(self.theme.text_muted()));
+                            ui.separator();
+                        }
+                    });
+                }
+            });
+        self.show_downloads = open;
+    }
+
+    fn render_bookmarks_manager(&mut self, ctx: &egui::Context) {
+        let mut open = self.show_bookmarks_manager;
+        egui::Window::new("Bookmarks")
+            .open(&mut open)
+            .default_width(440.0)
+            .default_height(380.0)
+            .resizable(true)
+            .show(ctx, |ui| {
+                let entries = storage::bookmarks::list(&self.data_dir);
+                if entries.is_empty() {
+                    ui.label("Your bookmarks will appear here.");
+                } else {
+                    egui::ScrollArea::vertical().show(ui, |ui| {
+                        for bookmark in entries {
+                            ui.horizontal(|ui| {
+                                ui.vertical(|ui| {
+                                    ui.label(RichText::new(&bookmark.title).strong());
+                                    ui.label(RichText::new(&bookmark.url).small().color(self.theme.text_muted()));
+                                    ui.label(RichText::new(&bookmark.folder).small().color(self.theme.text_muted()));
+                                });
+                                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                                    if ui.small_button("Remove").clicked() {
+                                        let _ = storage::bookmarks::remove(&self.data_dir, &bookmark.id);
+                                    }
+                                    if ui.small_button("Open").clicked() {
+                                        let url = bookmark.url.clone();
+                                        self.navigate_to(&url);
+                                    }
+                                });
+                            });
+                            ui.separator();
+                        }
+                    });
+                }
+            });
+        self.show_bookmarks_manager = open;
+    }
+
+    // ── 3-dot menu popup ──
+    fn render_menu_popup(&mut self, ctx: &egui::Context) {
+        let screen = ctx.available_rect();
+        let width = 252.0;
+        let pos = egui::pos2(screen.right() - width - 10.0, screen.top() + 82.0);
+
+        egui::Area::new(egui::Id::new("chrome_main_menu"))
+            .order(egui::Order::Foreground)
+            .fixed_pos(pos)
+            .show(ctx, |ui| {
+                Frame::none()
+                    .fill(self.theme.toolbar())
+                    .rounding(Rounding::same(9.0))
+                    .stroke(Stroke::new(1.0, self.theme.border()))
+                    .inner_margin(egui::Margin::same(8.0))
+                    .show(ui, |ui| {
+                        ui.set_min_width(width - 16.0);
+
+                        if ui.button("New tab                              Ctrl+T").clicked() {
+                            self.open_new_tab();
+                            self.show_menu = false;
+                        }
+                        if ui.button("Reopen closed tab              Ctrl+Shift+T").clicked() {
+                            self.restore_closed_tab();
+                            self.show_menu = false;
+                        }
+
+                        ui.separator();
+                        if ui.button("History                              Ctrl+H").clicked() {
+                            self.show_history = true;
+                            self.show_menu = false;
+                        }
+                        if ui.button("Downloads                         Ctrl+J").clicked() {
+                            self.show_downloads = true;
+                            self.show_menu = false;
+                        }
+                        if ui.button("Bookmarks").clicked() {
+                            self.show_bookmarks_manager = true;
+                            self.show_menu = false;
+                        }
+
+                        ui.separator();
+                        ui.label(RichText::new("Appearance").small().color(self.theme.text_muted()));
+                        ui.horizontal(|ui| {
+                            if ui.selectable_label(self.theme == Theme::Light, "Light").clicked() {
+                                self.theme = Theme::Light;
+                                self.viewport.dirty = true;
+                            }
+                            if ui.selectable_label(self.theme == Theme::Dark, "Dark").clicked() {
+                                self.theme = Theme::Dark;
+                                self.viewport.dirty = true;
+                            }
+                        });
+                        ui.checkbox(&mut self.bookmarks_bar_visible, "Show bookmarks bar");
+
+                        ui.separator();
+                        if ui.button("Exit").clicked() {
+                            ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                        }
+                    });
+            });
+
         if ctx.input(|i| i.pointer.any_click()) {
             self.show_menu = false;
         }
@@ -860,6 +1130,137 @@ impl BrowserWindow {
 
 fn persist_dummy_config(window: &BrowserWindow) {
     set_config(&window.profile_id, window.dummy_config.clone());
+}
+
+#[derive(Debug, Clone, Copy)]
+enum BrowserIcon { Back, Forward, Reload, Lock, Globe, Star, Menu, Close, Plus, Folder }
+
+fn browser_icon_button(
+    ui: &mut egui::Ui,
+    icon: BrowserIcon,
+    tooltip: &str,
+    enabled: bool,
+    theme: Theme,
+) -> egui::Response {
+    let sense = if enabled { Sense::click() } else { Sense::hover() };
+    let (rect, response) = ui.allocate_exact_size(Vec2::splat(32.0), sense);
+    if response.hovered() && enabled {
+        ui.painter().circle_filled(rect.center(), 15.0, theme.hover());
+    }
+    paint_browser_icon(
+        ui.painter(),
+        Rect::from_center_size(rect.center(), Vec2::splat(18.0)),
+        icon,
+        if enabled { theme.text() } else { theme.text_muted() },
+    );
+    response.on_hover_text(tooltip)
+}
+
+fn paint_browser_icon(painter: &egui::Painter, rect: Rect, icon: BrowserIcon, color: Color32) {
+    let c = rect.center();
+    let stroke = Stroke::new(1.65, color);
+    match icon {
+        BrowserIcon::Back | BrowserIcon::Forward => {
+            let d = if matches!(icon, BrowserIcon::Back) { -1.0 } else { 1.0 };
+            let end = c.x + d * 6.0;
+            painter.line_segment([egui::pos2(c.x - d * 5.0, c.y), egui::pos2(end, c.y)], stroke);
+            painter.line_segment([egui::pos2(end, c.y), egui::pos2(end - d * 5.0, c.y - 5.0)], stroke);
+            painter.line_segment([egui::pos2(end, c.y), egui::pos2(end - d * 5.0, c.y + 5.0)], stroke);
+        }
+        BrowserIcon::Reload => {
+            painter.circle_stroke(c, 7.0, stroke);
+            painter.line_segment([egui::pos2(c.x + 5.0, c.y - 6.0), egui::pos2(c.x + 7.0, c.y - 1.0)], stroke);
+            painter.line_segment([egui::pos2(c.x + 5.0, c.y - 6.0), egui::pos2(c.x, c.y - 5.0)], stroke);
+        }
+        BrowserIcon::Lock => {
+            painter.rect_filled(Rect::from_center_size(egui::pos2(c.x, c.y + 3.0), Vec2::new(11.0, 9.0)), Rounding::same(2.0), color);
+            painter.circle_stroke(egui::pos2(c.x, c.y - 2.0), 4.0, stroke);
+        }
+        BrowserIcon::Globe => {
+            painter.circle_stroke(c, 7.0, stroke);
+            painter.line_segment([egui::pos2(c.x - 7.0, c.y), egui::pos2(c.x + 7.0, c.y)], stroke);
+            painter.line_segment([egui::pos2(c.x, c.y - 7.0), egui::pos2(c.x, c.y + 7.0)], stroke);
+            painter.circle_stroke(c, 3.6, Stroke::new(1.0, color));
+        }
+        BrowserIcon::Star => {
+            let mut points = Vec::with_capacity(10);
+            for i in 0..10 {
+                let angle = -std::f32::consts::FRAC_PI_2 + i as f32 * std::f32::consts::PI / 5.0;
+                let radius = if i % 2 == 0 { 8.0 } else { 3.7 };
+                points.push(egui::pos2(c.x + angle.cos() * radius, c.y + angle.sin() * radius));
+            }
+            painter.add(egui::Shape::convex_polygon(points, Color32::TRANSPARENT, stroke));
+        }
+        BrowserIcon::Menu => {
+            for y in [-5.0, 0.0, 5.0] { painter.circle_filled(egui::pos2(c.x, c.y + y), 1.45, color); }
+        }
+        BrowserIcon::Close => {
+            painter.line_segment([egui::pos2(c.x - 4.0, c.y - 4.0), egui::pos2(c.x + 4.0, c.y + 4.0)], stroke);
+            painter.line_segment([egui::pos2(c.x + 4.0, c.y - 4.0), egui::pos2(c.x - 4.0, c.y + 4.0)], stroke);
+        }
+        BrowserIcon::Plus => {
+            painter.line_segment([egui::pos2(c.x - 5.0, c.y), egui::pos2(c.x + 5.0, c.y)], stroke);
+            painter.line_segment([egui::pos2(c.x, c.y - 5.0), egui::pos2(c.x, c.y + 5.0)], stroke);
+        }
+        BrowserIcon::Folder => {
+            let body = Rect::from_center_size(c, Vec2::new(14.0, 10.0));
+            painter.rect_stroke(body, Rounding::same(2.0), stroke);
+            painter.line_segment([egui::pos2(body.left() + 1.0, body.top()), egui::pos2(body.left() + 5.0, body.top() - 3.0)], stroke);
+            painter.line_segment([egui::pos2(body.left() + 5.0, body.top() - 3.0), egui::pos2(body.left() + 9.0, body.top() - 3.0)], stroke);
+        }
+    }
+}
+
+fn resolve_address(input: &str) -> String {
+    let value = input.trim();
+    if value.is_empty() { return "about:blank".to_string(); }
+    if value.starts_with("about:") || value.starts_with("http://") ||
+        value.starts_with("https://") || value.starts_with("file://") {
+        return value.to_string();
+    }
+    let local = value.starts_with("localhost") || value.starts_with("127.0.0.1") || value.starts_with("[::1]");
+    let looks_like_url = value.contains('.') || value.contains(':') || local || value.starts_with('/');
+    if looks_like_url {
+        if local || value.starts_with('/') { format!("http://{}", value.trim_start_matches('/')) }
+        else { format!("https://{}", value) }
+    } else {
+        format!("https://www.google.com/search?q={}", encode_query(value))
+    }
+}
+
+fn encode_query(value: &str) -> String {
+    let mut output = String::new();
+    for byte in value.bytes() {
+        if byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.' | b'~') {
+            output.push(byte as char);
+        } else {
+            output.push_str(&format!("%{:02X}", byte));
+        }
+    }
+    output
+}
+
+fn extract_page_title(html: &str) -> Option<String> {
+    let lower = html.to_ascii_lowercase();
+    let start = lower.find("<title")?;
+    let open = lower[start..].find('>')? + start + 1;
+    let end = lower[open..].find("</title>")? + open;
+    let title = html[open..end].trim();
+    if title.is_empty() { None } else { Some(title.to_string()) }
+}
+
+fn truncate_tab_title(value: &str, max_chars: usize) -> String {
+    let mut chars = value.chars();
+    let prefix: String = chars.by_ref().take(max_chars).collect();
+    if chars.next().is_some() { format!("{}…", prefix) } else { prefix }
+}
+
+fn escape_html(s: &str) -> String {
+    s.replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
+        .replace('\'', "&#39;")
 }
 
 fn extract_domain(url: &str) -> String {
