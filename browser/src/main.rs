@@ -287,6 +287,8 @@ impl winit::application::ApplicationHandler for BrowserApp {
             .create_window(
                 winit::window::Window::default_attributes()
                     .with_title("MyBrowser")
+                    .with_inner_size(winit::dpi::LogicalSize::new(1920.0, 1080.0))
+                    .with_maximized(true)
                     .with_visible(true),
             )
             .expect("failed to create window");

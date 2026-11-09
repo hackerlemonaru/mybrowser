@@ -34,20 +34,20 @@ pub enum Theme {
 impl Theme {
     fn frame(&self) -> Color32 {
         match self {
-            Theme::Light => Color32::from_rgb(232, 234, 237), // Chrome light grey frame
+            Theme::Light => Color32::from_rgb(222, 225, 230), // Chrome light frame
             Theme::Dark => Color32::from_rgb(32, 33, 36),     // Chrome dark frame
         }
     }
     fn toolbar(&self) -> Color32 {
         match self {
-            Theme::Light => Color32::from_rgb(255, 255, 255),
+            Theme::Light => Color32::from_rgb(241, 243, 244),
             Theme::Dark => Color32::from_rgb(32, 33, 36),
         }
     }
     fn tab_active(&self) -> Color32 {
         match self {
             Theme::Light => Color32::from_rgb(255, 255, 255),
-            Theme::Dark => Color32::from_rgb(48, 48, 48),
+            Theme::Dark => Color32::from_rgb(53, 54, 58),
         }
     }
     fn tab_inactive(&self) -> Color32 {
@@ -72,13 +72,13 @@ impl Theme {
     fn hover(&self) -> Color32 {
         match self {
             Theme::Light => Color32::from_rgb(225, 228, 232),
-            Theme::Dark => Color32::from_rgb(48, 48, 48),
+            Theme::Dark => Color32::from_rgb(60, 64, 67),
         }
     }
     fn border(&self) -> Color32 {
         match self {
             Theme::Light => Color32::from_rgb(218, 220, 224),
-            Theme::Dark => Color32::from_rgb(60, 61, 65),
+            Theme::Dark => Color32::from_rgb(95, 99, 104),
         }
     }
 }
@@ -169,7 +169,9 @@ impl BrowserWindow {
             address_focus_requested: false,
             show_menu: false,
             menu_hovered: false,
-            theme: Theme::Light,
+            // Chrome on the reference Windows desktop is using its dark theme.
+            // Users can still switch to Light from the browser menu.
+            theme: Theme::Dark,
             bookmarks_bar_visible: true,
             last_frame: Instant::now(),
             viewport: Viewport {
@@ -195,16 +197,16 @@ impl BrowserWindow {
         self.handle_shortcuts(ctx);
         // ── Tab Strip (first element at top) ──
         egui::TopBottomPanel::top("tab_strip")
-            .min_height(36.0)
-            .max_height(36.0)
+            .min_height(40.0)
+            .max_height(40.0)
             .show(ctx, |ui| {
                 self.render_tab_strip(ui);
             });
 
         // ── Navigation Toolbar ──
         egui::TopBottomPanel::top("nav_toolbar")
-            .min_height(44.0)
-            .max_height(44.0)
+            .min_height(48.0)
+            .max_height(48.0)
             .show(ctx, |ui| {
                 self.render_nav_toolbar(ui);
             });
@@ -267,7 +269,7 @@ impl BrowserWindow {
     fn render_tab_strip(&mut self, ui: &mut egui::Ui) {
         Frame::none()
             .fill(self.theme.tab_inactive())
-            .inner_margin(egui::vec2(8.0, 2.0))
+            .inner_margin(egui::vec2(8.0, 4.0))
             .show(ui, |ui| {
                 ui.horizontal(|ui| {
                     let ids = self.tab_manager.tab_order().to_vec();
@@ -307,7 +309,7 @@ impl BrowserWindow {
         let active = self.tab_manager.active_tab() == Some(tab.id);
         let tab_width = if tab.pinned { 48.0 } else { width };
         let (rect, response) = ui.allocate_exact_size(
-            Vec2::new(tab_width, 30.0),
+            Vec2::new(tab_width, 32.0),
             Sense::click_and_drag(),
         );
 
@@ -413,7 +415,7 @@ impl BrowserWindow {
     fn render_nav_toolbar(&mut self, ui: &mut egui::Ui) {
         Frame::none()
             .fill(self.theme.toolbar())
-            .inner_margin(egui::vec2(8.0, 4.0))
+            .inner_margin(egui::vec2(8.0, 6.0))
             .show(ui, |ui| {
                 ui.horizontal(|ui| {
                     let (can_back, can_forward) = self.navigation_availability();
@@ -500,6 +502,24 @@ impl BrowserWindow {
                         });
 
                     ui.add_space(3.0);
+                    if browser_icon_button(
+                        ui,
+                        BrowserIcon::Extensions,
+                        "Extensions",
+                        true,
+                        self.theme,
+                    ).clicked() {
+                        self.show_menu = true;
+                    }
+                    if browser_icon_button(
+                        ui,
+                        BrowserIcon::Profile,
+                        "Profile",
+                        true,
+                        self.theme,
+                    ).clicked() {
+                        self.show_menu = true;
+                    }
                     if browser_icon_button(
                         ui,
                         BrowserIcon::Menu,
@@ -1167,7 +1187,20 @@ fn persist_dummy_config(window: &BrowserWindow) {
 }
 
 #[derive(Debug, Clone, Copy)]
-enum BrowserIcon { Back, Forward, Reload, Lock, Globe, Star, Menu, Close, Plus, Folder }
+enum BrowserIcon {
+    Back,
+    Forward,
+    Reload,
+    Lock,
+    Globe,
+    Star,
+    Extensions,
+    Profile,
+    Menu,
+    Close,
+    Plus,
+    Folder,
+}
 
 fn browser_icon_button(
     ui: &mut egui::Ui,
@@ -1224,6 +1257,26 @@ fn paint_browser_icon(painter: &egui::Painter, rect: Rect, icon: BrowserIcon, co
                 points.push(egui::pos2(c.x + angle.cos() * radius, c.y + angle.sin() * radius));
             }
             painter.add(egui::Shape::convex_polygon(points, Color32::TRANSPARENT, stroke));
+        }
+        BrowserIcon::Extensions => {
+            let body = Rect::from_center_size(c, Vec2::splat(12.0));
+            painter.rect_stroke(body, Rounding::same(2.0), stroke);
+            painter.circle_filled(egui::pos2(body.center().x, body.top()), 2.4, color);
+            painter.circle_filled(egui::pos2(body.right(), body.center().y), 2.4, color);
+            painter.circle_filled(egui::pos2(body.center().x, body.bottom()), 2.4, color);
+            painter.circle_filled(egui::pos2(body.left(), body.center().y), 2.4, color);
+        }
+        BrowserIcon::Profile => {
+            painter.circle_stroke(c, 8.0, stroke);
+            painter.circle_filled(egui::pos2(c.x, c.y - 2.5), 2.6, color);
+            painter.line_segment(
+                [egui::pos2(c.x - 4.5, c.y + 4.0), egui::pos2(c.x, c.y + 1.5)],
+                Stroke::new(1.5, color),
+            );
+            painter.line_segment(
+                [egui::pos2(c.x, c.y + 1.5), egui::pos2(c.x + 4.5, c.y + 4.0)],
+                Stroke::new(1.5, color),
+            );
         }
         BrowserIcon::Menu => {
             for y in [-5.0, 0.0, 5.0] { painter.circle_filled(egui::pos2(c.x, c.y + y), 1.45, color); }
