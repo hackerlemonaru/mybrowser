@@ -195,8 +195,8 @@ impl BrowserWindow {
         self.handle_shortcuts(ctx);
         // ── Tab Strip (first element at top) ──
         egui::TopBottomPanel::top("tab_strip")
-            .min_height(42.0)
-            .max_height(42.0)
+            .min_height(36.0)
+            .max_height(36.0)
             .show(ctx, |ui| {
                 self.render_tab_strip(ui);
             });
@@ -210,10 +210,10 @@ impl BrowserWindow {
             });
 
         // ── Bookmarks Bar (only if bookmarks exist and bar is visible) ──
-        if self.bookmarks_bar_visible {
+        if self.bookmarks_bar_visible && self.has_bookmarks() {
             egui::TopBottomPanel::top("bookmarks_bar")
-                .min_height(28.0)
-                .max_height(28.0)
+                .min_height(30.0)
+                .max_height(30.0)
                 .show(ctx, |ui| {
                     self.render_bookmarks_bar(ui);
                 });
@@ -267,12 +267,14 @@ impl BrowserWindow {
     fn render_tab_strip(&mut self, ui: &mut egui::Ui) {
         Frame::none()
             .fill(self.theme.tab_inactive())
-            .inner_margin(egui::vec2(8.0, 3.0))
+            .inner_margin(egui::vec2(8.0, 2.0))
             .show(ui, |ui| {
                 ui.horizontal(|ui| {
                     let ids = self.tab_manager.tab_order().to_vec();
-                    let tab_width = (ui.available_width() / ids.len().max(1) as f32)
-                        .clamp(150.0, 230.0);
+                    // Chrome keeps tabs usable by shrinking them as the strip fills.
+                    // Avoid oversized cards that make the shell feel like a dashboard.
+                    let tab_width = ((ui.available_width() - 36.0) / ids.len().max(1) as f32)
+                        .clamp(118.0, 220.0);
 
                     egui::ScrollArea::horizontal()
                         .id_source("chrome_tab_strip")
@@ -305,7 +307,7 @@ impl BrowserWindow {
         let active = self.tab_manager.active_tab() == Some(tab.id);
         let tab_width = if tab.pinned { 48.0 } else { width };
         let (rect, response) = ui.allocate_exact_size(
-            Vec2::new(tab_width, 34.0),
+            Vec2::new(tab_width, 30.0),
             Sense::click_and_drag(),
         );
 
@@ -316,11 +318,11 @@ impl BrowserWindow {
         } else {
             theme.tab_inactive()
         };
-        ui.painter().rect_filled(rect, Rounding::same(8.0), fill);
+        ui.painter().rect_filled(rect, Rounding::same(7.0), fill);
         if active {
             ui.painter().rect_stroke(
                 rect,
-                Rounding::same(8.0),
+                Rounding::same(7.0),
                 Stroke::new(1.0, theme.border()),
             );
         }
@@ -353,7 +355,7 @@ impl BrowserWindow {
                 egui::pos2(title_rect.left(), title_rect.center().y),
                 Align2::LEFT_CENTER,
                 truncate_tab_title(title, 34),
-                FontId::proportional(12.5),
+                FontId::proportional(12.0),
                 if active { theme.text() } else { theme.text_muted() },
             );
         }
@@ -411,7 +413,7 @@ impl BrowserWindow {
     fn render_nav_toolbar(&mut self, ui: &mut egui::Ui) {
         Frame::none()
             .fill(self.theme.toolbar())
-            .inner_margin(egui::vec2(10.0, 5.0))
+            .inner_margin(egui::vec2(8.0, 4.0))
             .show(ui, |ui| {
                 ui.horizontal(|ui| {
                     let (can_back, can_forward) = self.navigation_availability();
@@ -427,7 +429,7 @@ impl BrowserWindow {
                         self.viewport.dirty = true;
                     }
 
-                    ui.add_space(6.0);
+                    ui.add_space(4.0);
                     let omnibox_width = (ui.available_width() - 42.0).max(180.0);
                     let active_url = self.active_url();
                     let security_icon = if active_url.starts_with("https://") {
@@ -441,7 +443,7 @@ impl BrowserWindow {
                             Theme::Light => Color32::from_rgb(241, 243, 244),
                             Theme::Dark => Color32::from_rgb(55, 56, 60),
                         })
-                        .rounding(Rounding::same(18.0))
+                        .rounding(Rounding::same(16.0))
                         .stroke(Stroke::new(
                             if self.omnibox_focused { 1.5 } else { 1.0 },
                             if self.omnibox_focused {
@@ -450,7 +452,7 @@ impl BrowserWindow {
                                 self.theme.border()
                             },
                         ))
-                        .inner_margin(egui::vec2(12.0, 2.0))
+                        .inner_margin(egui::vec2(11.0, 1.0))
                         .show(ui, |ui| {
                             ui.set_min_width(omnibox_width);
                             ui.set_max_width(omnibox_width);
@@ -465,7 +467,7 @@ impl BrowserWindow {
 
                                 let field_width = (omnibox_width - 82.0).max(80.0);
                                 let response = ui.add_sized(
-                                    [field_width, 28.0],
+                                    [field_width, 27.0],
                                     TextEdit::singleline(&mut self.address_bar)
                                         .desired_width(field_width)
                                         .hint_text("Search or enter address")
@@ -497,7 +499,7 @@ impl BrowserWindow {
                             });
                         });
 
-                    ui.add_space(5.0);
+                    ui.add_space(3.0);
                     if browser_icon_button(
                         ui,
                         BrowserIcon::Menu,
@@ -515,7 +517,7 @@ impl BrowserWindow {
     fn render_bookmarks_bar(&mut self, ui: &mut egui::Ui) {
         Frame::none()
             .fill(self.theme.tab_inactive())
-            .inner_margin(egui::vec2(10.0, 1.0))
+            .inner_margin(egui::vec2(8.0, 1.0))
             .show(ui, |ui| {
                 ui.horizontal(|ui| {
                     let entries = storage::bookmarks::list(&self.data_dir);
@@ -535,7 +537,7 @@ impl BrowserWindow {
                                         let response = ui.add(
                                             egui::Button::new(
                                                 RichText::new(truncate_tab_title(&bookmark.title, 26))
-                                                    .size(11.5)
+                                                    .size(12.0)
                                                     .color(self.theme.text()),
                                             )
                                             .frame(false)
@@ -1012,8 +1014,8 @@ impl BrowserWindow {
     // ── 3-dot menu popup ──
     fn render_menu_popup(&mut self, ctx: &egui::Context) {
         let screen = ctx.available_rect();
-        let width = 252.0;
-        let pos = egui::pos2(screen.right() - width - 10.0, screen.top() + 82.0);
+        let width = 264.0;
+        let pos = egui::pos2(screen.right() - width - 8.0, screen.top() + 80.0);
 
         egui::Area::new(egui::Id::new("chrome_main_menu"))
             .order(egui::Order::Foreground)
@@ -1027,25 +1029,25 @@ impl BrowserWindow {
                     .show(ui, |ui| {
                         ui.set_min_width(width - 16.0);
 
-                        if ui.button("New tab                              Ctrl+T").clicked() {
+                        if self.menu_item(ui, "New tab", "Ctrl+T").clicked() {
                             self.open_new_tab();
                             self.show_menu = false;
                         }
-                        if ui.button("Reopen closed tab              Ctrl+Shift+T").clicked() {
+                        if self.menu_item(ui, "Reopen closed tab", "Ctrl+Shift+T").clicked() {
                             self.restore_closed_tab();
                             self.show_menu = false;
                         }
 
                         ui.separator();
-                        if ui.button("History                              Ctrl+H").clicked() {
+                        if self.menu_item(ui, "History", "Ctrl+H").clicked() {
                             self.show_history = true;
                             self.show_menu = false;
                         }
-                        if ui.button("Downloads                         Ctrl+J").clicked() {
+                        if self.menu_item(ui, "Downloads", "Ctrl+J").clicked() {
                             self.show_downloads = true;
                             self.show_menu = false;
                         }
-                        if ui.button("Bookmarks").clicked() {
+                        if self.menu_item(ui, "Bookmarks", "").clicked() {
                             self.show_bookmarks_manager = true;
                             self.show_menu = false;
                         }
@@ -1065,7 +1067,7 @@ impl BrowserWindow {
                         ui.checkbox(&mut self.bookmarks_bar_visible, "Show bookmarks bar");
 
                         ui.separator();
-                        if ui.button("Exit").clicked() {
+                        if self.menu_item(ui, "Exit", "").clicked() {
                             ctx.send_viewport_cmd(egui::ViewportCommand::Close);
                         }
                     });
@@ -1074,6 +1076,38 @@ impl BrowserWindow {
         if ctx.input(|i| i.pointer.any_click()) {
             self.show_menu = false;
         }
+    }
+
+    fn menu_item(&self, ui: &mut egui::Ui, label: &str, shortcut: &str) -> egui::Response {
+        let response = ui.allocate_response(
+            Vec2::new(ui.available_width(), 30.0),
+            Sense::click(),
+        );
+        if response.hovered() {
+            ui.painter().rect_filled(
+                response.rect,
+                Rounding::same(6.0),
+                self.theme.hover(),
+            );
+        }
+        let text_rect = response.rect.shrink2(egui::vec2(10.0, 0.0));
+        ui.painter().text(
+            egui::pos2(text_rect.left(), text_rect.center().y),
+            Align2::LEFT_CENTER,
+            label,
+            FontId::proportional(13.0),
+            self.theme.text(),
+        );
+        if !shortcut.is_empty() {
+            ui.painter().text(
+                egui::pos2(text_rect.right(), text_rect.center().y),
+                Align2::RIGHT_CENTER,
+                shortcut,
+                FontId::proportional(11.0),
+                self.theme.text_muted(),
+            );
+        }
+        response
     }
 
     // ── Dummy profile side panel ──
@@ -1143,9 +1177,9 @@ fn browser_icon_button(
     theme: Theme,
 ) -> egui::Response {
     let sense = if enabled { Sense::click() } else { Sense::hover() };
-    let (rect, response) = ui.allocate_exact_size(Vec2::splat(32.0), sense);
+    let (rect, response) = ui.allocate_exact_size(Vec2::splat(30.0), sense);
     if response.hovered() && enabled {
-        ui.painter().circle_filled(rect.center(), 15.0, theme.hover());
+        ui.painter().circle_filled(rect.center(), 14.0, theme.hover());
     }
     paint_browser_icon(
         ui.painter(),
@@ -1287,4 +1321,3 @@ fn favicon_color(domain: &str) -> Color32 {
         60 + (b % 160),
     )
 }
-
